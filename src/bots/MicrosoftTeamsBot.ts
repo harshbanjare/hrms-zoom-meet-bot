@@ -17,6 +17,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { isHrmsExecutionContext } from '../execution/types';
 
 const execAsync = promisify(exec);
 
@@ -29,13 +30,17 @@ export class MicrosoftTeamsBot extends MeetBotBase {
     this._logger = logger;
     this._correlationId = correlationId;
   }
-  async join({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, uploader }: JoinParams): Promise<void> {
+  async join({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, uploader, executionContext }: JoinParams): Promise<void> {
     const _state: BotStatus[] = ['processing'];
+    const isHrms = isHrmsExecutionContext(executionContext);
 
     const handleUpload = async () => {
       this._logger.info('Begin recording upload to server', { userId, teamId });
       const uploadResult = await uploader.uploadRecordingToRemoteStorage();
       this._logger.info('Recording upload result', { uploadResult, userId, teamId });
+      if (!uploadResult) {
+        throw new Error('Recording upload failed');
+      }
       return uploadResult;
     };
 
@@ -49,13 +54,17 @@ export class MicrosoftTeamsBot extends MeetBotBase {
       if (_state.includes('finished') && !uploadResult) {
         _state.splice(_state.indexOf('finished'), 1, 'failed');
         this._logger.error('Recording completed but upload failed', { botId, userId, teamId });
-        await patchBotStatus({ botId, eventId, provider: 'microsoft', status: _state, token: bearerToken }, this._logger);
+        if (!isHrms) {
+          await patchBotStatus({ botId, eventId, provider: 'microsoft', status: _state, token: bearerToken }, this._logger);
+        }
         throw new Error('Recording upload failed');
       } else if (uploadResult) {
         this._logger.info('Recording and upload completed successfully', { botId, userId, teamId });
       }
 
-      await patchBotStatus({ botId, eventId, provider: 'microsoft', status: _state, token: bearerToken }, this._logger);
+      if (!isHrms) {
+        await patchBotStatus({ botId, eventId, provider: 'microsoft', status: _state, token: bearerToken }, this._logger);
+      }
     } catch(error) {
       // Log the actual error that occurred
       this._logger.error('Error in Microsoft Teams bot join process', {
@@ -67,13 +76,20 @@ export class MicrosoftTeamsBot extends MeetBotBase {
         currentState: _state
       });
 
-      if (!_state.includes('finished'))
-        _state.push('failed');
+      if (!_state.includes('failed')) {
+        if (_state.includes('finished')) {
+          _state.splice(_state.indexOf('finished'), 1, 'failed');
+        } else {
+          _state.push('failed');
+        }
+      }
 
       // Try to update bot status (may fail if API is unreachable, but that's OK)
-      await patchBotStatus({ botId, eventId, provider: 'microsoft', status: _state, token: bearerToken }, this._logger);
+      if (!isHrms) {
+        await patchBotStatus({ botId, eventId, provider: 'microsoft', status: _state, token: bearerToken }, this._logger);
+      }
 
-      if (error instanceof WaitingAtLobbyRetryError)
+      if (!isHrms && error instanceof WaitingAtLobbyRetryError)
         await handleWaitingAtLobbyError({ token: bearerToken, botId, eventId, provider: 'microsoft', error }, this._logger);
 
       throw error;

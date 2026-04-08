@@ -12,8 +12,14 @@ import path from 'path';
 import { LogAggregator } from '../util/logger';
 import config from '../config';
 import { getStorageProvider } from '../uploader/providers/factory';
+import { S3StorageProvider } from '../uploader/providers/s3-storage-provider';
 import { getTimeString } from '../lib/datetime';
 import { notifyRecordingCompleted, RecordingCompletedPayload } from '../services/notificationService';
+import {
+  BotExecutionContext,
+  UploadedRecordingDetails,
+  isHrmsExecutionContext,
+} from '../execution/types';
 
 console.log(' ----- PWD OR CWD ----- ', process.cwd());
 
@@ -45,6 +51,7 @@ function isNoSuchUploadError(err: any, userId: string, logger: Logger): boolean 
 export interface IUploader {
   uploadRecordingToRemoteStorage(options?: { forceUpload?: boolean }): Promise<boolean>;
   saveDataToTempFile(data: Buffer): Promise<boolean>;
+  getUploadedRecordingDetails(): UploadedRecordingDetails | null;
 }
 
 // Save to disk and upload in one session
@@ -59,6 +66,7 @@ class DiskUploader implements IUploader {
   private _tempFileId: string;
   private _logger: Logger;
   private _meetingLink?: string;
+  private _executionContext?: BotExecutionContext;
 
   private readonly UPLOAD_CHUNK_SIZE = 50 * 1024 * 1024; // 50 MiB
 
@@ -74,7 +82,7 @@ class DiskUploader implements IUploader {
   private uploadId: string;
   private lastUploadedBlobUrl?: string;
   private lastRecordingId?: string;
-  private lastStorageDetails?: Record<string, any>;
+  private lastStorageDetails?: UploadedRecordingDetails;
 
   private queue: Buffer[];
   private writing: boolean;
@@ -91,7 +99,8 @@ class DiskUploader implements IUploader {
     namePrefix: string,
     tempFileId: string,
     logger: Logger,
-    meetingLink?: string
+    meetingLink?: string,
+    executionContext?: BotExecutionContext
   ) {
     this._token = token;
     this._teamId = teamId;
@@ -102,6 +111,7 @@ class DiskUploader implements IUploader {
     this._tempFileId = tempFileId;
     this._logger = logger;
     this._meetingLink = meetingLink;
+    this._executionContext = executionContext;
 
     this.queue = [];
     this.writing = false;
@@ -118,7 +128,8 @@ class DiskUploader implements IUploader {
     namePrefix: string,
     tempFileId: string,
     logger: Logger,
-    meetingLink?: string
+    meetingLink?: string,
+    executionContext?: BotExecutionContext
   ) {
     const folderPath = DiskUploader.getFolderPath(userId);
 
@@ -133,9 +144,48 @@ class DiskUploader implements IUploader {
       namePrefix,
       tempFileId,
       logger,
-      meetingLink
+      meetingLink,
+      executionContext
     );
     return instance;
+  }
+
+  public getUploadedRecordingDetails(): UploadedRecordingDetails | null {
+    return this.lastStorageDetails || null;
+  }
+
+  private sanitizePathSegment(value: string): string {
+    const sanitized = value
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9._-]+/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '');
+
+    return sanitized || 'recording';
+  }
+
+  private buildTimestampSlug(): string {
+    return new Date().toISOString().replace(/[:.]/g, '-');
+  }
+
+  private buildHrmsObjectKey() {
+    const executionContext = this._executionContext;
+    if (!isHrmsExecutionContext(executionContext)) {
+      return null;
+    }
+
+    const prefix = executionContext.recording.keyPrefix.replace(/^\/+|\/+$/g, '');
+    const title = this.sanitizePathSegment(executionContext.meetingTitle);
+    const timestamp = this.buildTimestampSlug();
+    const fileName = `${title}-${timestamp}${this.fileExtension}`;
+    const keyParts = [prefix, executionContext.moduleId, executionContext.jobId, fileName]
+      .filter(Boolean);
+
+    return {
+      key: keyParts.join('/'),
+      fileName,
+    };
   }
 
   private async uploadChunk(data: Buffer, partNumber: number) {
@@ -490,18 +540,33 @@ class DiskUploader implements IUploader {
   }
 
   private async uploadRecordingToObjectStorage(): Promise<boolean> {
-    const provider = getStorageProvider();
+    const hrmsExecution = isHrmsExecutionContext(this._executionContext)
+      ? this._executionContext
+      : null;
+    const provider = hrmsExecution
+      ? new S3StorageProvider()
+      : getStorageProvider();
     this._logger.info(`Uploading recording to object storage using provider: ${provider.name}...`);
 
     const filePath = DiskUploader.getFilePath(this._userId, this._tempFileId, this.fileExtension);
     const chunkSize = this.UPLOAD_CHUNK_SIZE;
+    const stats = await fs.promises.stat(filePath);
 
-    // Compose key to preserve existing S3 layout for parity
-    const fileName = fileNameTemplate(this._namePrefix, getTimeString(this._timezone, this._logger));
-    const key = `meeting-bot/${this._userId}/${fileName}${this.fileExtension}`;
+    const defaultFileName = fileNameTemplate(this._namePrefix, getTimeString(this._timezone, this._logger));
+    const hrmsObject = this.buildHrmsObjectKey();
+    const fileName = hrmsObject?.fileName || `${defaultFileName}${this.fileExtension}`;
+    const key = hrmsObject?.key || `meeting-bot/${this._userId}/${fileName}`;
+    const s3Target = hrmsExecution
+      ? {
+          bucket: hrmsExecution.recording.bucket,
+          region: hrmsExecution.recording.region,
+          endpoint: hrmsExecution.recording.endpoint,
+          forcePathStyle: hrmsExecution.recording.forcePathStyle,
+        }
+      : undefined;
 
     // Validate provider configuration before attempting upload
-    provider.validateConfig();
+    provider.validateConfig({ s3Target });
 
     const maxAttempts = 2;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -515,6 +580,7 @@ class DiskUploader implements IUploader {
           logger: this._logger,
           partSize: chunkSize,
           concurrency: 4,
+          s3Target,
         });
 
         if (!uploadSuccess) {
@@ -526,7 +592,7 @@ class DiskUploader implements IUploader {
         // Build blobUrl + storage details for notifications
         try {
           if (provider.name === 's3') {
-            const s3cfg = config.s3CompatibleStorage;
+            const s3cfg = s3Target || config.s3CompatibleStorage;
             const uploadCfg = {
               endpoint: s3cfg.endpoint,
               region: s3cfg.region!,
@@ -540,9 +606,13 @@ class DiskUploader implements IUploader {
               key,
               region: s3cfg.region,
               endpoint: s3cfg.endpoint,
+              storagePath: `s3://${s3cfg.bucket}/${key}`,
+              fileName,
+              contentType: this.contentType,
+              sizeBytes: stats.size,
               forcePathStyle: !!s3cfg.forcePathStyle,
               url: this.lastUploadedBlobUrl,
-            };
+            } as UploadedRecordingDetails;
           } else if (provider.name === 'azure') {
             // Prefer signed URL if method is available
             let url: string | undefined;
@@ -570,7 +640,10 @@ class DiskUploader implements IUploader {
               url: this.lastUploadedBlobUrl,
               signedUrlTtlSeconds: config.azureBlobStorage.signedUrlTtlSeconds,
               blobPrefix: config.azureBlobStorage.blobPrefix,
-            };
+              fileName,
+              contentType: this.contentType,
+              sizeBytes: stats.size,
+            } as UploadedRecordingDetails;
           }
         } catch (metaErr) {
           this._logger.warn('Unable to compute storage metadata/url for notification', metaErr as any);
@@ -631,7 +704,9 @@ class DiskUploader implements IUploader {
 
       let uploadResult = false;
       // Upload recording to configured storage
-      if (config.uploaderType === 'screenapp') {
+      if (isHrmsExecutionContext(this._executionContext)) {
+        uploadResult = await this.uploadRecordingToObjectStorage();
+      } else if (config.uploaderType === 'screenapp') {
         uploadResult = await this.uploadRecordingToScreenApp();
       } else if (config.uploaderType === 's3') {
         // Route to selected object storage provider (S3 or Azure) based on configuration
@@ -644,7 +719,7 @@ class DiskUploader implements IUploader {
       await this.deleteTempFileAsync();
 
       // Send optional notifications on success
-      if (uploadResult) {
+      if (uploadResult && !isHrmsExecutionContext(this._executionContext)) {
         try {
           const payload: RecordingCompletedPayload = {
             recordingId: this.lastRecordingId ?? this._tempFileId,

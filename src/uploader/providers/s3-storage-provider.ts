@@ -1,4 +1,4 @@
-import { StorageProvider, UploadOptions } from './storage-provider';
+import { StorageProvider, UploadOptions, S3UploadTarget } from './storage-provider';
 import config from '../../config';
 import { S3Client, S3ClientConfig } from '@aws-sdk/client-s3';
 import { Upload } from '@aws-sdk/lib-storage';
@@ -7,13 +7,27 @@ import { createReadStream } from 'fs';
 export class S3StorageProvider implements StorageProvider {
   readonly name = 's3' as const;
 
-  validateConfig(): void {
+  private resolveTarget(target?: S3UploadTarget) {
     const s3 = config.s3CompatibleStorage;
+    return {
+      bucket: target?.bucket || s3.bucket,
+      region: target?.region || s3.region,
+      endpoint: target?.endpoint ?? s3.endpoint,
+      forcePathStyle:
+        typeof target?.forcePathStyle === 'boolean'
+          ? target.forcePathStyle
+          : !!s3.forcePathStyle,
+    };
+  }
+
+  validateConfig(options?: { s3Target?: S3UploadTarget }): void {
+    const s3 = config.s3CompatibleStorage;
+    const target = this.resolveTarget(options?.s3Target);
     const missing: string[] = [];
-    if (!s3.region) missing.push('S3_REGION');
     if (!s3.accessKeyId) missing.push('S3_ACCESS_KEY_ID');
     if (!s3.secretAccessKey) missing.push('S3_SECRET_ACCESS_KEY');
-    if (!s3.bucket) missing.push('S3_BUCKET_NAME');
+    if (!target.region) missing.push('S3_REGION');
+    if (!target.bucket) missing.push('S3_BUCKET_NAME');
     if (missing.length) {
       throw new Error(`S3 compatible storage configuration is not set or incomplete. Missing: ${missing.join(', ')}`);
     }
@@ -21,23 +35,24 @@ export class S3StorageProvider implements StorageProvider {
 
   async uploadFile(options: UploadOptions): Promise<boolean> {
     const s3Config = config.s3CompatibleStorage;
+    const target = this.resolveTarget(options.s3Target);
 
     // TypeScript knows these are defined because validateConfig() was called first
-    if (!s3Config.region || !s3Config.accessKeyId || !s3Config.secretAccessKey || !s3Config.bucket) {
+    if (!target.region || !s3Config.accessKeyId || !s3Config.secretAccessKey || !target.bucket) {
       throw new Error('S3 configuration validation failed - this should never happen after validateConfig()');
     }
 
     const clientConfig: S3ClientConfig = {
-      region: s3Config.region,
+      region: target.region,
       credentials: {
         accessKeyId: s3Config.accessKeyId,
         secretAccessKey: s3Config.secretAccessKey,
       },
-      forcePathStyle: !!s3Config.forcePathStyle,
+      forcePathStyle: !!target.forcePathStyle,
     };
 
-    if (s3Config.endpoint) {
-      clientConfig.endpoint = s3Config.endpoint;
+    if (target.endpoint) {
+      clientConfig.endpoint = target.endpoint;
     }
 
     const s3Client = new S3Client(clientConfig);
@@ -47,7 +62,7 @@ export class S3StorageProvider implements StorageProvider {
       const upload = new Upload({
         client: s3Client,
         params: {
-          Bucket: s3Config.bucket,
+          Bucket: target.bucket,
           Key: options.key,
           Body: createReadStream(options.filePath),
           ContentType: options.contentType,

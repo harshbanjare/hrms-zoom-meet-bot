@@ -14,6 +14,7 @@ import { uploadDebugImage } from '../services/bugService';
 import createBrowserContext from '../lib/chromium';
 import { GOOGLE_LOBBY_MODE_HOST_TEXT, GOOGLE_REQUEST_DENIED, GOOGLE_REQUEST_TIMEOUT } from '../constants';
 import { vp9MimeType, webmMimeType } from '../lib/recording';
+import { isHrmsExecutionContext } from '../execution/types';
 
 export class GoogleMeetBot extends MeetBotBase {
   private _logger: Logger;
@@ -25,13 +26,17 @@ export class GoogleMeetBot extends MeetBotBase {
     this._correlationId = correlationId;
   }
 
-  async join({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, uploader }: JoinParams): Promise<void> {
+  async join({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, uploader, executionContext }: JoinParams): Promise<void> {
     const _state: BotStatus[] = ['processing'];
+    const isHrms = isHrmsExecutionContext(executionContext);
 
     const handleUpload = async () => {
       this._logger.info('Begin recording upload to server', { userId, teamId });
       const uploadResult = await uploader.uploadRecordingToRemoteStorage();
       this._logger.info('Recording upload result', { uploadResult, userId, teamId });
+      if (!uploadResult) {
+        throw new Error('Recording upload failed');
+      }
       return uploadResult;
     };
 
@@ -46,18 +51,27 @@ export class GoogleMeetBot extends MeetBotBase {
         _state.splice(_state.indexOf('finished'), 1, 'failed');
       }
 
-      await patchBotStatus({ botId, eventId, provider: 'google', status: _state, token: bearerToken }, this._logger);
+      if (!isHrms) {
+        await patchBotStatus({ botId, eventId, provider: 'google', status: _state, token: bearerToken }, this._logger);
+      }
     } catch(error) {
-      if (!_state.includes('finished')) 
-        _state.push('failed');
+      if (!_state.includes('failed')) {
+        if (_state.includes('finished')) {
+          _state.splice(_state.indexOf('finished'), 1, 'failed');
+        } else {
+          _state.push('failed');
+        }
+      }
 
-      await patchBotStatus({ botId, eventId, provider: 'google', status: _state, token: bearerToken }, this._logger);
+      if (!isHrms) {
+        await patchBotStatus({ botId, eventId, provider: 'google', status: _state, token: bearerToken }, this._logger);
+      }
       
-      if (error instanceof WaitingAtLobbyRetryError) {
+      if (!isHrms && error instanceof WaitingAtLobbyRetryError) {
         await handleWaitingAtLobbyError({ token: bearerToken, botId, eventId, provider: 'google', error }, this._logger);
       }
 
-      if (error instanceof UnsupportedMeetingError) {
+      if (!isHrms && error instanceof UnsupportedMeetingError) {
         await handleUnsupportedMeetingError({ token: bearerToken, botId, eventId, provider: 'google', error }, this._logger);
       }
 

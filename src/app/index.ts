@@ -3,6 +3,7 @@ import client from 'prom-client';
 import config, { NODE_ENV } from '../config';
 import mainDebug from '../test/debug';
 import googleRouter from './google';
+import hrmsRouter from './hrms';
 import microsoftRouter from './microsoft';
 import zoomRouter from './zoom';
 import { globalJobStore } from '../lib/globalJobStore';
@@ -66,6 +67,7 @@ app.get('/debug', async (req, res, next) => {
 });
 
 app.use('/google', googleRouter);
+app.use('/hrms', hrmsRouter);
 app.use('/microsoft', microsoftRouter);
 app.use('/zoom', zoomRouter);
 

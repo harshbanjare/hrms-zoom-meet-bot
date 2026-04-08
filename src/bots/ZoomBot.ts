@@ -13,6 +13,7 @@ import { uploadDebugImage } from '../services/bugService';
 import { Logger } from 'winston';
 import { handleWaitingAtLobbyError } from './MeetBotBase';
 import { ZOOM_REQUEST_DENIED } from '../constants';
+import { isHrmsExecutionContext } from '../execution/types';
 
 class BotBase extends AbstractMeetBot {
   protected page: Page;
@@ -37,29 +38,42 @@ export class ZoomBot extends BotBase {
 
   // TODO use base class for shared functions such as bot status and bot logging
   // TODO Lift the JoinParams to the constructor argument
-  async join({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, uploader }: JoinParams): Promise<void> {
+  async join({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, uploader, executionContext }: JoinParams): Promise<void> {
     const _state: BotStatus[] = ['processing'];
+    const isHrms = isHrmsExecutionContext(executionContext);
 
     const handleUpload = async () => {
       this._logger.info('Begin recording upload to server', { userId, teamId });
       const uploadResult = await uploader.uploadRecordingToRemoteStorage();
       this._logger.info('Recording upload result', { uploadResult, userId, teamId });
+      if (!uploadResult) {
+        throw new Error('Recording upload failed');
+      }
     };
     
     try {
       const pushState = (st: BotStatus) => _state.push(st);
       await this.joinMeeting({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, pushState, uploader });
-      await patchBotStatus({ botId, eventId, provider: 'zoom', status: _state, token: bearerToken }, this._logger);
 
       // Finish the upload from the temp video
       await handleUpload();
+      if (!isHrms) {
+        await patchBotStatus({ botId, eventId, provider: 'zoom', status: _state, token: bearerToken }, this._logger);
+      }
     } catch(error) {
-      if (!_state.includes('finished')) 
-        _state.push('failed');
+      if (!_state.includes('failed')) {
+        if (_state.includes('finished')) {
+          _state.splice(_state.indexOf('finished'), 1, 'failed');
+        } else {
+          _state.push('failed');
+        }
+      }
 
-      await patchBotStatus({ botId, eventId, provider: 'zoom', status: _state, token: bearerToken }, this._logger);
+      if (!isHrms) {
+        await patchBotStatus({ botId, eventId, provider: 'zoom', status: _state, token: bearerToken }, this._logger);
+      }
       
-      if (error instanceof WaitingAtLobbyRetryError) {
+      if (!isHrms && error instanceof WaitingAtLobbyRetryError) {
         await handleWaitingAtLobbyError({ token: bearerToken, botId, eventId, provider: 'zoom', error }, this._logger);
       }
 

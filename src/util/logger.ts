@@ -94,6 +94,44 @@ export const createCorrelationId = ({
   }
 };
 
+export const createHrmsCorrelationId = ({
+  jobId,
+  moduleId,
+  provider,
+  meetingUrl,
+}: {
+  jobId: string,
+  moduleId: string,
+  provider: string,
+  meetingUrl: string,
+}): string => {
+  try {
+    const name = `${jobId}:${moduleId}:${provider}:${meetingUrl}`;
+    const id = uuidv5(name, NAMESPACE);
+    console.log(`[correlationId:${id}]`, {
+      correlationId: id,
+      jobId,
+      moduleId,
+      provider,
+      meetingUrl,
+      method: 'v5'
+    });
+    return id;
+  } catch (err) {
+    console.error('Unable to create deterministic HRMS correlationId', { jobId, moduleId, provider, err });
+    const id = v4();
+    console.log(`[correlationId:${id}]`, {
+      correlationId: id,
+      jobId,
+      moduleId,
+      provider,
+      meetingUrl,
+      method: 'v4'
+    });
+    return id;
+  }
+};
+
 export const getErrorType = (error: unknown): string => {
   if (!error) return 'Unknown';
   

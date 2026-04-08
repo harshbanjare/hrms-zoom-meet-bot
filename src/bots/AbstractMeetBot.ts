@@ -1,7 +1,8 @@
 import { IUploader } from '../middleware/disk-uploader';
+import { BotExecutionContext, BotProvider } from '../execution/types';
 
 export interface BotLaunchParams {
-  provider: 'google' | 'microsoft' | 'zoom';
+  provider: BotProvider;
   url: string;
   name: string;
   teamId: string;
@@ -22,6 +23,7 @@ export interface JoinParams {
   botId?: string;
   eventId?: string;
   uploader: IUploader;
+  executionContext?: BotExecutionContext;
 }
 
 export abstract class AbstractMeetBot {

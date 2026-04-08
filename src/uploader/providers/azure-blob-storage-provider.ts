@@ -43,7 +43,7 @@ export class AzureBlobStorageProvider implements StorageProvider {
     return serviceClient.getContainerClient(cfg.container);
   }
 
-  validateConfig(): void {
+  validateConfig(_options?: { s3Target?: import('./storage-provider').S3UploadTarget }): void {
     // Will throw if invalid
     this.getContainerClient();
   }
