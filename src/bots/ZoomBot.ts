@@ -43,9 +43,18 @@ export class ZoomBot extends BotBase {
     const isHrms = isHrmsExecutionContext(executionContext);
 
     const handleUpload = async () => {
-      this._logger.info('Begin recording upload to server', { userId, teamId });
+      this._logger.info('Begin recording upload to server', {
+        phase: 'upload.started',
+        userId,
+        teamId,
+      });
       const uploadResult = await uploader.uploadRecordingToRemoteStorage();
-      this._logger.info('Recording upload result', { uploadResult, userId, teamId });
+      this._logger.info('Recording upload result', {
+        phase: uploadResult ? 'upload.finished' : 'upload.failed',
+        uploadResult,
+        userId,
+        teamId,
+      });
       if (!uploadResult) {
         throw new Error('Recording upload failed');
       }
@@ -83,9 +92,12 @@ export class ZoomBot extends BotBase {
 
   private async joinMeeting({ pushState, ...params }: JoinParams & { pushState(state: BotStatus): void }): Promise<void> {
     const { url, name } = params;
-    this._logger.info('Launching browser for Zoom...', { userId: params.userId });
+    this._logger.info('Launching browser for Zoom...', {
+      phase: 'browser.launch',
+      userId: params.userId,
+    });
 
-    this.page = await createBrowserContext(url, this._correlationId, 'zoom');
+    this.page = await createBrowserContext(url, this._correlationId, 'zoom', this._logger);
 
     await this.page.route('**/*.exe', (route) => {
       this._logger.info(`Detected .exe download: ${route.request().url()?.split('download')[0]}`);
@@ -107,7 +119,7 @@ export class ZoomBot extends BotBase {
       await acceptCookies.click({ force: true });
       
     } catch (error) {
-      await uploadDebugImage(await this.page.screenshot({ type: 'png', fullPage: true }), 'accept-cookie', params.userId, this._logger, params.botId);
+      await uploadDebugImage(await this.page.screenshot({ type: 'png', fullPage: true }), 'accept-cookie', params.userId, this._logger, params.botId, undefined, params.executionContext);
       this._logger.info('Unable to accept cookies...', error);
     }
 
@@ -119,6 +131,11 @@ export class ZoomBot extends BotBase {
     const findAndEnableJoinFromBrowserButton = async (retry: number): Promise<boolean> => {
       try {
         if (retry >= attempts) {
+          this._logger.warn('Zoom web client link was not found after retries', {
+            phase: 'zoom.join-path',
+            retry,
+            attempts,
+          });
           return false;
         }
 
@@ -126,19 +143,52 @@ export class ZoomBot extends BotBase {
         await this.page.waitForTimeout(5000);
 
         const launchMeetingGetByRole = this.page.getByRole('button', { name: /Launch Meeting/i }).first();
-        this._logger.info('Does Launch Meeting exist', await launchMeetingGetByRole.isVisible());
+        const launchMeetingVisible = await launchMeetingGetByRole.isVisible().catch(() => false);
+        this._logger.info('Zoom landing page visibility check', {
+          phase: 'zoom.join-path',
+          retry,
+          launchMeetingVisible,
+        });
 
         const launchDownloadGetByRole = this.page.getByRole('button', { name: /Download Now/i }).first();
-        this._logger.info('Does Download Now exist', await launchDownloadGetByRole.isVisible());
+        const downloadNowVisible = await launchDownloadGetByRole.isVisible().catch(() => false);
+        this._logger.info('Zoom download button visibility check', {
+          phase: 'zoom.join-path',
+          retry,
+          downloadNowVisible,
+        });
 
-        this._logger.info('Click on Download Now...');
-        await launchDownloadGetByRole.click({ force: true });
+        if (downloadNowVisible) {
+          this._logger.info('Click on Download Now...', {
+            phase: 'zoom.join-path',
+            retry,
+          });
+          await launchDownloadGetByRole.click({ force: true });
+        } else {
+          this._logger.warn('Download Now button is not visible before browser-join probe', {
+            phase: 'zoom.join-path',
+            retry,
+          });
+        }
 
         const joinFromBrowser = await this.page.locator('a', { hasText: 'Join from your browser' }).first();
         await joinFromBrowser.waitFor({ timeout: 5000 });
+        const joinFromBrowserCount = await joinFromBrowser.count();
+        const joinFromBrowserVisible = await joinFromBrowser.isVisible().catch(() => false);
 
-        if ((await joinFromBrowser.count()) > 0) {
+        this._logger.info('Zoom browser join link visibility check', {
+          phase: 'zoom.join-path',
+          retry,
+          joinFromBrowserCount,
+          joinFromBrowserVisible,
+        });
+
+        if (joinFromBrowserCount > 0) {
           await joinFromBrowser.click({ force: true });
+          this._logger.info('Clicked Join from your browser link', {
+            phase: 'zoom.join-path',
+            retry,
+          });
           return true;
         }
         else {
@@ -146,7 +196,11 @@ export class ZoomBot extends BotBase {
           return await findAndEnableJoinFromBrowserButton(retry + 1);
         }
       } catch(error) {
-        this._logger.info('Error on try find the web client', error);
+        this._logger.info('Error on try find the web client', {
+          phase: 'zoom.join-path',
+          retry,
+          error,
+        });
         if (retry >= attempts) {
           return false;
         }
@@ -161,9 +215,19 @@ export class ZoomBot extends BotBase {
         wcUrl.pathname = wcUrl.pathname.replace('/j/', '/wc/join/');
         this._logger.info('Navigating to Zoom Web Client URL...', { wcUrl: wcUrl.toString(), botId: params.botId, userId: params.userId });
         await this.page.goto(wcUrl.toString(), { waitUntil: 'networkidle' });
+        this._logger.info('Switched to direct Zoom web client URL', {
+          phase: 'zoom.join-path',
+          usingDirectWebClient,
+          wcUrl: wcUrl.toString(),
+        });
         return true;
       } catch(err) {
-        this._logger.info('Failed to access ZOOM web client by URL', { botId: params.botId, userId: params.userId });
+        this._logger.info('Failed to access ZOOM web client by URL', {
+          phase: 'zoom.join-path',
+          botId: params.botId,
+          userId: params.userId,
+          error: err,
+        });
         return false;
       }
     };
@@ -229,12 +293,20 @@ export class ZoomBot extends BotBase {
     }
     
     if (!foundAndClickedJoinFromBrowser || !navSuccess) {
-      await uploadDebugImage(await this.page.screenshot({ type: 'png', fullPage: true }), 'enable-join-from-browser', params.userId, this._logger, params.botId);
-      this._logger.info('Failed to enable Join from your browser button...', params.userId);
-      this._logger.info('Zoom Bot will now attempt to access the Web Client by URL...', params.userId);
+      await uploadDebugImage(await this.page.screenshot({ type: 'png', fullPage: true }), 'enable-join-from-browser', params.userId, this._logger, params.botId, undefined, params.executionContext);
+      this._logger.info('Failed to enable Join from your browser button...', {
+        phase: 'zoom.join-path',
+        userId: params.userId,
+        foundAndClickedJoinFromBrowser,
+        navSuccess,
+      });
+      this._logger.info('Zoom Bot will now attempt to access the Web Client by URL...', {
+        phase: 'zoom.join-path',
+        userId: params.userId,
+      });
       const canAccess = await visitWebClientByUrl();
       if (!canAccess) {
-        await uploadDebugImage(await this.page.screenshot({ type: 'png', fullPage: true }), 'direct-access-webclient', params.userId, this._logger, params.botId);
+        await uploadDebugImage(await this.page.screenshot({ type: 'png', fullPage: true }), 'direct-access-webclient', params.userId, this._logger, params.botId, undefined, params.executionContext);
         throw new Error('Unable to join meeting after trying to access the web client by /wc/join/');
       }
     }
@@ -253,11 +325,21 @@ export class ZoomBot extends BotBase {
         }
 
         apps.push(startWith);
+        this._logger.info('Attempting to detect Zoom web client container', {
+          phase: 'zoom.join-path',
+          startWith,
+          triedContainers: apps,
+          usingDirectWebClient,
+        });
         if (startWith === 'app') {
           const input = await this.page.waitForSelector('input[type="text"]', { timeout: 30000 });
           const join = await this.page.locator('button', { hasText: /Join/i });
           join.waitFor({ timeout: 15000 });
-          this._logger.info('App container...', { input: input !== null, join: join !== null });
+          this._logger.info('Zoom app container detection result', {
+            phase: 'zoom.join-path',
+            inputFound: input !== null,
+            joinLocatorFound: join !== null,
+          });
           if (input && join) {
             iframe = this.page;
           } else {
@@ -267,7 +349,12 @@ export class ZoomBot extends BotBase {
 
         if (startWith === 'iframe') {
           const iframeElementHandle = await this.page.waitForSelector('iframe#webclient', { timeout: 30000, state: 'attached' });
-          this._logger.info('Iframe container...', await iframeElementHandle?.getAttribute('id'));
+          const iframeId = await iframeElementHandle?.getAttribute('id');
+          this._logger.info('Zoom iframe container detection result', {
+            phase: 'zoom.join-path',
+            iframeFound: iframeElementHandle !== null,
+            iframeId,
+          });
           const contentFrame = await iframeElementHandle.contentFrame();
           if (contentFrame) {
             iframe = contentFrame;
@@ -278,8 +365,12 @@ export class ZoomBot extends BotBase {
 
         return true;
       } catch(err) {
-        this._logger.info('Cannot detect the App container for Zoom Web Client', startWith, err);
-        await uploadDebugImage(await this.page.screenshot({ type: 'png', fullPage: true }), 'detect-app-container', params.userId, this._logger, params.botId);
+        this._logger.info('Cannot detect the App container for Zoom Web Client', {
+          phase: 'zoom.join-path',
+          startWith,
+          error: err,
+        });
+        await uploadDebugImage(await this.page.screenshot({ type: 'png', fullPage: true }), 'detect-app-container', params.userId, this._logger, params.botId, undefined, params.executionContext);
         return await detectAppContainer(startWith === 'app' ? 'iframe' : 'app');
       }
     };
@@ -292,6 +383,10 @@ export class ZoomBot extends BotBase {
 
     this._logger.info('Waiting for the input field to be visible...');
     await iframe.waitForSelector('input[type="text"]', { timeout: 60000 });
+    this._logger.info('Zoom name input is visible', {
+      phase: 'zoom.join-path',
+      usingDirectWebClient,
+    });
     
     this._logger.info('Waiting for 5 seconds...');
     await this.page.waitForTimeout(5000);
@@ -302,6 +397,10 @@ export class ZoomBot extends BotBase {
 
     this._logger.info('Clicking the "Join" button...');
     const joinButton = await iframe.locator('button', { hasText: 'Join' });
+    this._logger.info('Zoom join button locator resolved', {
+      phase: 'zoom.join-path',
+      joinButtonCount: await joinButton.count(),
+    });
     await joinButton.click();
 
     // Wait in waiting room
@@ -374,6 +473,10 @@ export class ZoomBot extends BotBase {
       }
 
       this._logger.info('Bot is entering the meeting after wait room...');
+      this._logger.info('Zoom meeting-entry heuristics satisfied', {
+        phase: 'meeting.entered',
+        userId: params.userId,
+      });
     } catch (error) {
       this._logger.info('Closing the browser on error...', error);
       await this.page.context().browser()?.close();
@@ -471,7 +574,9 @@ export class ZoomBot extends BotBase {
     pushState('joined');
 
     // Recording the meeting page
-    this._logger.info('Begin recording...');
+    this._logger.info('Begin recording...', {
+      phase: 'recording.started',
+    });
     await this.recordMeetingPage({ ...params });
     
     pushState('finished');
@@ -508,8 +613,14 @@ export class ZoomBot extends BotBase {
     );
     await recordingTask.runAsync(null);
   
-    this._logger.info('Waiting for recording duration:', config.maxRecordingDuration, 'minutes...');
+    this._logger.info('Waiting for recording duration', {
+      phase: 'recording.started',
+      maxRecordingDurationMinutes: config.maxRecordingDuration,
+    });
     waitingPromise.promise.then(async () => {
+      this._logger.info('Recording stop signal received', {
+        phase: 'recording.stopped',
+      });
       this._logger.info('Closing the browser...');
       await this.page.context().browser()?.close();
 

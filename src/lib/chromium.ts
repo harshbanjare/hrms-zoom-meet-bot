@@ -1,6 +1,7 @@
 import { Browser, BrowserContext, Page } from 'playwright';
 import { chromium } from 'playwright-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+import { Logger } from 'winston';
 import config from '../config';
 import { getCorrelationIdLog } from '../util/logger';
 
@@ -11,27 +12,73 @@ chromium.use(stealthPlugin);
 
 export type BotType = 'microsoft' | 'google' | 'zoom';
 
-function attachBrowserErrorHandlers(browser: Browser, context: BrowserContext, page: Page, correlationId: string) {
-  const log = getCorrelationIdLog(correlationId);
+function emitBrowserLog(
+  logger: Logger | undefined,
+  correlationId: string,
+  level: 'info' | 'warn' | 'error',
+  message: string,
+  meta?: Record<string, unknown>,
+) {
+  if (logger) {
+    logger[level](message, {
+      phase: 'browser.runtime',
+      ...meta,
+    });
+    return;
+  }
 
+  const line = `${getCorrelationIdLog(correlationId)} ${message}`;
+  if (level === 'error') {
+    console.error(line, meta ?? '');
+    return;
+  }
+  if (level === 'warn') {
+    console.warn(line, meta ?? '');
+    return;
+  }
+  console.log(line, meta ?? '');
+}
+
+function attachBrowserErrorHandlers(
+  browser: Browser,
+  context: BrowserContext,
+  page: Page,
+  correlationId: string,
+  logger?: Logger,
+) {
   browser.on('disconnected', () => {
-    console.log(`${log} Browser has disconnected!`);
+    emitBrowserLog(logger, correlationId, 'warn', 'Browser has disconnected', {
+      phase: 'browser.lifecycle',
+    });
   });
 
   context.on('close', () => {
-    console.log(`${log} Browser has closed!`);
+    emitBrowserLog(logger, correlationId, 'info', 'Browser context has closed', {
+      phase: 'browser.lifecycle',
+    });
   });
 
   page.on('crash', (page) => {
-    console.error(`${log} Page has crashed! ${page?.url()}`);
+    emitBrowserLog(logger, correlationId, 'error', 'Browser page has crashed', {
+      phase: 'browser.lifecycle',
+      pageUrl: page?.url(),
+    });
   });
 
   page.on('close', (page) => {
-    console.log(`${log} Page has closed! ${page?.url()}`);
+    emitBrowserLog(logger, correlationId, 'info', 'Browser page has closed', {
+      phase: 'browser.lifecycle',
+      pageUrl: page?.url(),
+    });
   });
 }
 
-async function launchBrowserWithTimeout(launchFn: () => Promise<Browser>, timeoutMs: number, correlationId: string): Promise<Browser> {
+async function launchBrowserWithTimeout(
+  launchFn: () => Promise<Browser>,
+  timeoutMs: number,
+  correlationId: string,
+  logger?: Logger,
+): Promise<Browser> {
   let timeoutId: NodeJS.Timeout;
   let finished = false;
 
@@ -50,12 +97,17 @@ async function launchBrowserWithTimeout(launchFn: () => Promise<Browser>, timeou
         if (!finished) {
           finished = true;
           clearTimeout(timeoutId);
-          console.log(`${getCorrelationIdLog(correlationId)} Browser launch function success!`);
+          emitBrowserLog(logger, correlationId, 'info', 'Browser launch function succeeded', {
+            phase: 'browser.launch',
+          });
           resolve(result);
         }
       })
       .catch(err => {
-        console.error(`${getCorrelationIdLog(correlationId)} Error launching browser`, err);
+        emitBrowserLog(logger, correlationId, 'error', 'Error launching browser', {
+          phase: 'browser.launch',
+          error: err instanceof Error ? err.message : String(err),
+        });
         if (!finished) {
           finished = true;
           clearTimeout(timeoutId);
@@ -65,7 +117,12 @@ async function launchBrowserWithTimeout(launchFn: () => Promise<Browser>, timeou
   });
 }
 
-async function createBrowserContext(url: string, correlationId: string, botType: BotType = 'google'): Promise<Page> {
+async function createBrowserContext(
+  url: string,
+  correlationId: string,
+  botType: BotType = 'google',
+  logger?: Logger,
+): Promise<Page> {
   const size = { width: 1280, height: 720 };
 
   // Base browser args used by all bots
@@ -106,7 +163,15 @@ async function createBrowserContext(url: string, correlationId: string, botType:
     ? ['--kiosk', '--start-maximized']
     : [];
 
-  console.log(`${getCorrelationIdLog(correlationId)} Launching browser for ${botType} bot (fake devices: ${botType === 'microsoft'})`);
+  emitBrowserLog(logger, correlationId, 'info', `Launching browser for ${botType} bot`, {
+    phase: 'browser.launch',
+    botType,
+    fakeDevicesEnabled: botType === 'microsoft',
+    display: process.env.DISPLAY || null,
+    pulseServer: process.env.PULSE_SERVER || null,
+    chromeExecutablePath: config.chromeExecutablePath,
+    viewport: `${size.width}x${size.height}`,
+  });
 
   const browser = await launchBrowserWithTimeout(
     async () => await chromium.launch({
@@ -119,7 +184,8 @@ async function createBrowserContext(url: string, correlationId: string, botType:
       executablePath: config.chromeExecutablePath,
     }),
     60000,
-    correlationId
+    correlationId,
+    logger,
   );
 
   const linuxX11UserAgent = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36';
@@ -144,9 +210,13 @@ async function createBrowserContext(url: string, correlationId: string, botType:
   const page = await context.newPage();
 
   // Attach common error handlers
-  attachBrowserErrorHandlers(browser, context, page, correlationId);
+  attachBrowserErrorHandlers(browser, context, page, correlationId, logger);
 
-  console.log(`${getCorrelationIdLog(correlationId)} Browser launched successfully!`);
+  emitBrowserLog(logger, correlationId, 'info', 'Browser launched successfully', {
+    phase: 'browser.launch',
+    grantedPermissions: ['microphone', 'camera'],
+    ignoreHTTPSErrors: true,
+  });
 
   return page;
 }

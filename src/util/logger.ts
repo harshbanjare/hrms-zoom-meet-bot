@@ -1,27 +1,82 @@
 import { ConsoleMessage } from 'playwright';
+import fs from 'fs';
+import path from 'path';
 import { createLogger, format, transports, Logger } from 'winston';
 import { v5 as uuidv5, v4 } from 'uuid';
 
 const NAMESPACE = uuidv5.DNS; 
 
-export function loggerFactory(correlationId: string, botType?: string): Logger {
+const logsDir = path.join(process.cwd(), 'logs');
+if (!fs.existsSync(logsDir)) {
+  fs.mkdirSync(logsDir, { recursive: true });
+}
+
+const meetingBotLogFile = path.join(
+  logsDir,
+  `meeting-bot-${new Date().toISOString().slice(0, 10)}.log`,
+);
+
+const normalizeMeta = (meta: Record<string, unknown>) => {
+  return Object.entries(meta).reduce<Record<string, unknown>>((acc, [key, value]) => {
+    if (value === undefined) {
+      return acc;
+    }
+
+    if (value instanceof Error) {
+      acc[key] = {
+        name: value.name,
+        message: value.message,
+        stack: value.stack,
+      };
+      return acc;
+    }
+
+    acc[key] = value;
+    return acc;
+  }, {});
+};
+
+const buildLoggerFormat = (correlationId: string, botType?: string) =>
+  format.combine(
+    format.timestamp(),
+    format.errors({ stack: true }),
+    format((info) => {
+      info.correlationId = correlationId;
+      if (botType) {
+        info.botType = botType;
+      }
+      return info;
+    })(),
+    format.printf(({ timestamp, level, message, correlationId, botType, stack, ...meta }) => {
+      const normalizedMeta = normalizeMeta(meta);
+      const mergedMeta = stack
+        ? {
+            ...normalizedMeta,
+            stack,
+          }
+        : normalizedMeta;
+      const metaStr = Object.keys(mergedMeta).length
+        ? ` ${JSON.stringify(mergedMeta)}`
+        : '';
+      const botTypeStr = botType ? ` [botType: ${botType}]` : '';
+      return `[${timestamp}] [${level}] [correlationId: ${correlationId}]${botTypeStr} ${message}${metaStr}`;
+    }),
+  );
+
+export function loggerFactory(
+  correlationId: string,
+  botType?: string,
+  baseMeta: Record<string, unknown> = {},
+): Logger {
   return createLogger({
-    format: format.combine(
-      format.timestamp(),
-      format((info) => {
-        info.correlationId = correlationId;
-        if (botType) {
-          info.botType = botType;
-        }
-        return info;
-      })(),
-      format.printf(({ timestamp, level, message, correlationId, botType, ...meta }) => {
-        const metaStr = Object.keys(meta).length ? JSON.stringify(meta) : '';
-        const botTypeStr = botType ? ` [botType: ${botType}]` : '';
-        return `[${timestamp}] [${level}] [correlationId: ${correlationId}]${botTypeStr} ${message} ${metaStr}`;
+    defaultMeta: normalizeMeta(baseMeta),
+    format: buildLoggerFormat(correlationId, botType),
+    transports: [
+      new transports.Console(),
+      new transports.File({
+        filename: meetingBotLogFile,
       }),
-    ),
-    transports: [new transports.Console()],
+    ],
   });
 }
 
@@ -33,21 +88,24 @@ export const browserLogCaptureCallback = async (logger: Logger, msg: ConsoleMess
     }
     switch (msg?.type()) {
       case 'error':
-        logger.error(`[Playwright chrome logger] ${msg.text()}`, ...values);
+        logger.error(`[Playwright chrome logger] ${msg.text()}`, { browserValues: values });
         break;
       case 'warning':
-        logger.warn(`[Playwright chrome logger] ${msg.text()}`, ...values);
+        logger.warn(`[Playwright chrome logger] ${msg.text()}`, { browserValues: values });
         break;
       case 'info':
       case 'log':
-        logger.info(`[Playwright chrome logger] ${msg.text()}`, ...values);
+        logger.info(`[Playwright chrome logger] ${msg.text()}`, { browserValues: values });
         break;
       default:
-        logger.info(`[Playwright chrome logger] ${msg.text()}`, ...values);
+        logger.info(`[Playwright chrome logger] ${msg.text()}`, { browserValues: values });
         break;
     }
   } catch(err) {
-    logger.info('Failed to log browser messages...', err?.message);
+    logger.info('Failed to log browser messages...', {
+      phase: 'browser.console.capture',
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
 };
 

@@ -96,11 +96,11 @@ export class MicrosoftTeamsBot extends MeetBotBase {
     }
   }
 
-  private async joinMeeting({ url, name, teamId, userId, eventId, botId, pushState, uploader }: JoinParams & { pushState(state: BotStatus): void }): Promise<void> {
+  private async joinMeeting({ url, name, teamId, userId, eventId, botId, pushState, uploader, executionContext }: JoinParams & { pushState(state: BotStatus): void }): Promise<void> {
     // First run: Navigate to pre-join screen to trigger Chrome dialogs, then close
     this._logger.info('Pre-warming: Opening browser to trigger first-run dialogs...');
     try {
-      const warmupPage = await createBrowserContext(url, this._correlationId, 'microsoft');
+      const warmupPage = await createBrowserContext(url, this._correlationId, 'microsoft', this._logger);
       this._logger.info('Pre-warming: Navigating to Teams meeting...');
       await warmupPage.goto(url, { waitUntil: 'networkidle' });
 
@@ -147,7 +147,7 @@ export class MicrosoftTeamsBot extends MeetBotBase {
     // Second run: Actual meeting join
     this._logger.info('Launching browser for actual meeting...');
 
-    this.page = await createBrowserContext(url, this._correlationId, 'microsoft');
+    this.page = await createBrowserContext(url, this._correlationId, 'microsoft', this._logger);
 
     await this.page.waitForTimeout(1000);
 
@@ -303,7 +303,7 @@ export class MicrosoftTeamsBot extends MeetBotBase {
       3,
       15000,
       async () => {
-        await uploadDebugImage(await this.page.screenshot({ type: 'png', fullPage: true }), 'join-button-click', userId, this._logger, botId);
+        await uploadDebugImage(await this.page.screenshot({ type: 'png', fullPage: true }), 'join-button-click', userId, this._logger, botId, undefined, executionContext);
       }
     );
 

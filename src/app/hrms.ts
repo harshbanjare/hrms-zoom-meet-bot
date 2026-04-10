@@ -122,6 +122,13 @@ function createBot(provider: HrmsExecutionContext['provider'], correlationId: st
 
 async function runHrmsJob(executionContext: HrmsExecutionContext, logger: Logger) {
   try {
+    logger.info('Starting HRMS meeting job execution', {
+      phase: 'job.started',
+      storageProvider: 's3',
+      recordingBucket: executionContext.recording.bucket,
+      recordingRegion: executionContext.recording.region,
+      recordingKeyPrefix: executionContext.recording.keyPrefix,
+    });
     const tempFileId = encodeFileNameSafebase64(`${executionContext.jobId}:${executionContext.moduleId}`);
     const uploader: IUploader = await DiskUploader.initialize(
       '',
@@ -156,6 +163,9 @@ async function runHrmsJob(executionContext: HrmsExecutionContext, logger: Logger
     });
     const bot = createBot(executionContext.provider, correlationId, logger);
 
+    logger.info('Launching HRMS meeting bot join flow', {
+      phase: 'browser.launch',
+    });
     await bot.join(joinParams);
     const recording = uploader.getUploadedRecordingDetails();
 
@@ -194,7 +204,19 @@ async function runHrmsJob(executionContext: HrmsExecutionContext, logger: Logger
       metadata: executionContext.metadata,
     };
 
-    await notifyHrmsJobResult(executionContext, successPayload, logger);
+    logger.info('Sending HRMS completion callback', {
+      phase: 'callback.started',
+      callbackUrl: executionContext.callbackUrl,
+      callbackStatus: successPayload.status,
+    });
+    const callbackDelivered = await notifyHrmsJobResult(executionContext, successPayload, logger);
+    logger.info('HRMS meeting job finished', {
+      phase: 'job.finished',
+      callbackDelivered,
+      status: successPayload.status,
+      recordingKey: recording.key,
+      recordingBucket: recording.bucket,
+    });
   } catch (error) {
     const failurePayload: HrmsJobResult = {
       jobId: executionContext.jobId,
@@ -211,7 +233,22 @@ async function runHrmsJob(executionContext: HrmsExecutionContext, logger: Logger
       metadata: executionContext.metadata,
     };
 
-    await notifyHrmsJobResult(executionContext, failurePayload, logger);
+    logger.error('HRMS meeting job failed', {
+      phase: 'job.failed',
+      errorType: getErrorType(error),
+      error: error instanceof Error ? error.message : String(error),
+    });
+    logger.info('Sending HRMS failure callback', {
+      phase: 'callback.started',
+      callbackUrl: executionContext.callbackUrl,
+      callbackStatus: failurePayload.status,
+    });
+    const callbackDelivered = await notifyHrmsJobResult(executionContext, failurePayload, logger);
+    logger.info('HRMS meeting job finished', {
+      phase: 'job.finished',
+      callbackDelivered,
+      status: failurePayload.status,
+    });
     throw error;
   }
 }
@@ -254,14 +291,22 @@ router.post('/jobs', async (req: Request, res: Response) => {
     provider: executionContext.provider,
     meetingUrl: executionContext.meetingUrl,
   });
-  const logger = loggerFactory(correlationId, executionContext.provider);
+  const logger = loggerFactory(correlationId, executionContext.provider, {
+    jobId: executionContext.jobId,
+    moduleId: executionContext.moduleId,
+    provider: executionContext.provider,
+    meetingUrl: executionContext.meetingUrl,
+  });
 
   try {
     const jobResult = await globalJobStore.addJob(async () => {
       await runHrmsJob(executionContext, logger);
-    }, logger);
+    }, logger, { maxRetries: 0 });
 
     if (!jobResult.accepted) {
+      logger.warn('Rejected HRMS job because another meeting is active', {
+        phase: 'job.rejected',
+      });
       return res.status(409).json({
         success: false,
         error: 'Another meeting is currently being processed. Please try again later.',
@@ -272,6 +317,9 @@ router.post('/jobs', async (req: Request, res: Response) => {
       });
     }
 
+    logger.info('Accepted HRMS meeting job', {
+      phase: 'job.accepted',
+    });
     return res.status(202).json({
       success: true,
       message: 'HRMS meeting job accepted and processing started',
@@ -283,6 +331,7 @@ router.post('/jobs', async (req: Request, res: Response) => {
     });
   } catch (error) {
     logger.error('Error setting up HRMS job', {
+      phase: 'job.setup.failed',
       jobId: executionContext.jobId,
       moduleId: executionContext.moduleId,
       error: error instanceof Error ? error.message : String(error),

@@ -5,23 +5,28 @@ import { getErrorType } from '../util/logger';
 const sleep = (ms: number): Promise<void> =>
   new Promise((r) => setTimeout(r, ms));
 
+interface JobOptions {
+  maxRetries?: number;
+}
+
 export class JobStore {
   private isRunning: boolean = false;
   private shutdownRequested: boolean = false;
 
   async addJob<T>(
-    task: () => Promise<T>, 
+    task: () => Promise<T>,
     logger: Logger,
-    retryCount: number = 0
+    options: JobOptions = {},
   ): Promise<{ accepted: boolean }> {
     if (this.isRunning || this.shutdownRequested) {
       return { accepted: false };
     }
 
     this.isRunning = true;
-    
+    const maxRetries = options.maxRetries ?? 2;
+
     // Execute the task asynchronously without waiting for completion
-    this.executeTaskWithRetry(task, logger, retryCount).then(() => {
+    this.executeTaskWithRetry(task, logger, 0, maxRetries).then(() => {
       logger.info('LogBasedMetric Bot has finished recording meeting successfully.');
     }).catch((error) => {
       const errorType = getErrorType(error);
@@ -42,7 +47,8 @@ export class JobStore {
   private async executeTaskWithRetry<T>(
     task: () => Promise<T>,
     logger: Logger,
-    retryCount: number
+    retryCount: number,
+    maxRetries: number,
   ): Promise<void> {
     try {
       await task();
@@ -58,12 +64,20 @@ export class JobStore {
       }
 
       retryCount += 1;
+      if (retryCount > maxRetries) {
+        throw error;
+      }
+
       await sleep(retryCount * 30000);
-      if (retryCount < 3) {
+      if (retryCount <= maxRetries) {
         if (retryCount) {
-          logger.warn(`Retry count: ${retryCount}`);
+          logger.warn(`Retry count: ${retryCount}`, {
+            phase: 'job.retry',
+            retryCount,
+            maxRetries,
+          });
         }
-        await this.executeTaskWithRetry(task, logger, retryCount);
+        await this.executeTaskWithRetry(task, logger, retryCount, maxRetries);
       } else {
         throw error;
       }
