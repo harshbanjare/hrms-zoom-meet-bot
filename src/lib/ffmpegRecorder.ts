@@ -1,5 +1,6 @@
 import { spawn, ChildProcess } from 'child_process';
 import { Logger } from 'winston';
+import config from '../config';
 
 export class FFmpegRecorder {
   private ffmpegProcess: ChildProcess | null = null;
@@ -23,14 +24,15 @@ export class FFmpegRecorder {
     return new Promise((resolve, reject) => {
       try {
         // FFmpeg command to capture X11 display and PulseAudio monitor
+        const captureSize = `${config.recordingCapture.width}x${config.recordingCapture.height}`;
         const ffmpegArgs = [
           '-y', // Overwrite output file
           '-loglevel', 'info', // Verbose logging for debugging
 
           // Video input from X11 display (with Y offset to skip address bar)
           '-f', 'x11grab',
-          '-video_size', '1280x720',
-          '-framerate', '25',
+          '-video_size', captureSize,
+          '-framerate', String(config.recordingCapture.frameRate),
           '-draw_mouse', '0',
           '-i', `${process.env.DISPLAY || ':99'}+0,80`,  // +0,80 = X offset 0, Y offset 80 (skip address bar)
 
@@ -42,15 +44,18 @@ export class FFmpegRecorder {
 
           // Video encoding with better compatibility
           '-c:v', 'libx264',
-          '-preset', 'faster',
+          '-preset', 'medium',
           '-pix_fmt', 'yuv420p',
-          '-crf', '23',
-          '-g', '50', // Keyframe interval
+          '-crf', '20',
+          '-b:v', `${Math.round(config.recordingCapture.videoBitsPerSecond / 1000)}k`,
+          '-maxrate', `${Math.round(config.recordingCapture.videoBitsPerSecond / 1000)}k`,
+          '-bufsize', `${Math.round((config.recordingCapture.videoBitsPerSecond * 2) / 1000)}k`,
+          '-g', String(config.recordingCapture.frameRate * 2), // Keyframe interval
           '-threads', '0',
 
           // Audio encoding
           '-c:a', 'aac',
-          '-b:a', '128k',
+          '-b:a', `${Math.round(config.recordingCapture.audioBitsPerSecond / 1000)}k`,
           '-ar', '44100',
           '-ac', '2',
           '-strict', 'experimental',

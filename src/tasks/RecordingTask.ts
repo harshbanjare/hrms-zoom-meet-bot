@@ -31,8 +31,8 @@ export class RecordingTask extends Task<null, void> {
 
   protected async execute(): Promise<void> {
     await this.page.evaluate(
-      async ({ teamId, duration, inactivityLimit, userId, slightlySecretId, activateInactivityDetectionAfter, activateInactivityDetectionAfterMinutes, primaryMimeType, secondaryMimeType }:
-        { teamId: string, duration: number, inactivityLimit: number, userId: string, slightlySecretId: string, activateInactivityDetectionAfter: string, activateInactivityDetectionAfterMinutes: number, primaryMimeType: string, secondaryMimeType: string }) => {
+      async ({ teamId, duration, inactivityLimit, userId, slightlySecretId, activateInactivityDetectionAfter, activateInactivityDetectionAfterMinutes, primaryMimeType, secondaryMimeType, captureWidth, captureHeight, captureFrameRate, videoBitsPerSecond, audioBitsPerSecond }:
+        { teamId: string, duration: number, inactivityLimit: number, userId: string, slightlySecretId: string, activateInactivityDetectionAfter: string, activateInactivityDetectionAfterMinutes: number, primaryMimeType: string, secondaryMimeType: string, captureWidth: number, captureHeight: number, captureFrameRate: number, videoBitsPerSecond: number, audioBitsPerSecond: number }) => {
         let timeoutId: NodeJS.Timeout;
         let inactivityDetectionTimeout: NodeJS.Timeout;
 
@@ -64,7 +64,11 @@ export class RecordingTask extends Task<null, void> {
           }
 
           const stream: MediaStream = await (navigator.mediaDevices as any).getDisplayMedia({
-            video: true,
+            video: {
+              width: { ideal: captureWidth, max: captureWidth },
+              height: { ideal: captureHeight, max: captureHeight },
+              frameRate: { ideal: captureFrameRate, max: captureFrameRate },
+            },
             audio: {
               autoGainControl: false,
               channels: 2,
@@ -78,11 +82,19 @@ export class RecordingTask extends Task<null, void> {
           let options: MediaRecorderOptions = {};
           if (MediaRecorder.isTypeSupported(primaryMimeType)) {
             console.log(`Media Recorder will use ${primaryMimeType} codecs...`);
-            options = { mimeType: primaryMimeType };
+            options = {
+              mimeType: primaryMimeType,
+              videoBitsPerSecond,
+              audioBitsPerSecond,
+            };
           }
           else {
             console.warn(`Media Recorder did not find primary mime type codecs ${primaryMimeType}, Using fallback codecs ${secondaryMimeType}`);
-            options = { mimeType: secondaryMimeType };
+            options = {
+              mimeType: secondaryMimeType,
+              videoBitsPerSecond,
+              audioBitsPerSecond,
+            };
           }
 
           const mediaRecorder = new MediaRecorder(stream, { ...options });
@@ -343,7 +355,12 @@ export class RecordingTask extends Task<null, void> {
         activateInactivityDetectionAfterMinutes: config.activateInactivityDetectionAfter,
         activateInactivityDetectionAfter: new Date(new Date().getTime() + config.activateInactivityDetectionAfter * 60 * 1000).toISOString(),
         primaryMimeType: webmMimeType,
-        secondaryMimeType: vp9MimeType
+        secondaryMimeType: vp9MimeType,
+        captureWidth: config.recordingCapture.width,
+        captureHeight: config.recordingCapture.height,
+        captureFrameRate: config.recordingCapture.frameRate,
+        videoBitsPerSecond: config.recordingCapture.videoBitsPerSecond,
+        audioBitsPerSecond: config.recordingCapture.audioBitsPerSecond,
       }
     );
   }

@@ -123,7 +123,10 @@ async function createBrowserContext(
   botType: BotType = 'google',
   logger?: Logger,
 ): Promise<Page> {
-  const size = { width: 1280, height: 720 };
+  const size = {
+    width: config.recordingCapture.width,
+    height: config.recordingCapture.height,
+  };
 
   // Base browser args used by all bots
   const baseBrowserArgs: string[] = [
