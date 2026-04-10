@@ -36,6 +36,80 @@ export class ZoomBot extends BotBase {
     super(logger, correlationId);
   }
 
+  private async dismissAiCompanionPrompt(
+    container: Frame | Page,
+    params: JoinParams,
+    source: string,
+  ): Promise<boolean> {
+    try {
+      const companionDialog = container
+        .locator('div, [role="dialog"]')
+        .filter({ hasText: /Request access for AI Companion/i })
+        .first();
+
+      const dialogVisible = await companionDialog.isVisible().catch(() => false);
+      if (!dialogVisible) {
+        this._logger.info('Zoom AI Companion prompt not present', {
+          phase: 'zoom.ai-companion.check',
+          source,
+        });
+        return false;
+      }
+
+      this._logger.warn('Zoom AI Companion prompt detected', {
+        phase: 'zoom.ai-companion.detected',
+        source,
+      });
+
+      const notNowButton = companionDialog
+        .locator('button, [role="button"]')
+        .filter({ hasText: /^Not now$/i })
+        .first();
+
+      const notNowVisible = await notNowButton.isVisible().catch(() => false);
+      if (!notNowVisible) {
+        this._logger.warn('Zoom AI Companion prompt is visible but Not now button was not found', {
+          phase: 'zoom.ai-companion.dismiss.failed',
+          source,
+        });
+        await uploadDebugImage(
+          await this.page.screenshot({ type: 'png', fullPage: true }),
+          `zoom-ai-companion-${source}`,
+          params.userId,
+          this._logger,
+          params.botId,
+          undefined,
+          params.executionContext,
+        );
+        return false;
+      }
+
+      await notNowButton.click({ force: true, timeout: 5000 });
+      await this.page.waitForTimeout(1000);
+
+      this._logger.info('Dismissed Zoom AI Companion prompt using Not now', {
+        phase: 'zoom.ai-companion.dismissed',
+        source,
+      });
+      return true;
+    } catch (error) {
+      this._logger.warn('Failed to dismiss Zoom AI Companion prompt', {
+        phase: 'zoom.ai-companion.dismiss.failed',
+        source,
+        error,
+      });
+      return false;
+    }
+  }
+
+  private async dismissBlockingZoomPrompts(
+    container: Frame | Page,
+    params: JoinParams,
+    source: string,
+  ) {
+    await this.dismissAiCompanionPrompt(container, params, source);
+  }
+
   // TODO use base class for shared functions such as bot status and bot logging
   // TODO Lift the JoinParams to the constructor argument
   async join({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, uploader, executionContext }: JoinParams): Promise<void> {
@@ -571,6 +645,8 @@ export class ZoomBot extends BotBase {
       this._logger.info('OK button might be missing...', error);
     }
 
+    await this.dismissBlockingZoomPrompts(iframe, params, 'post-join');
+
     pushState('joined');
 
     // Recording the meeting page
@@ -585,6 +661,8 @@ export class ZoomBot extends BotBase {
   private async recordMeetingPage(params: JoinParams): Promise<void> {
     const { teamId, userId, eventId, botId, uploader } = params;
     const duration = config.maxRecordingDuration * 60 * 1000;
+
+    await this.dismissBlockingZoomPrompts(this.page, params, 'pre-recording');
 
     this._logger.info('Setting up the duration');
     const processingTime = 0.2 * 60 * 1000;

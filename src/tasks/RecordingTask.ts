@@ -116,6 +116,9 @@ export class RecordingTask extends Task<null, void> {
             if (inactivityDetectionTimeout) {
               clearTimeout(inactivityDetectionTimeout);
             }
+            if (aiCompanionDismissInterval) {
+              clearInterval(aiCompanionDismissInterval);
+            }
 
             // Begin browser cleanup
             (window as any).screenAppMeetEnd(slightlySecretId);
@@ -123,6 +126,55 @@ export class RecordingTask extends Task<null, void> {
 
           let loneTest: NodeJS.Timeout;
           let monitor = true;
+          let aiCompanionDismissInterval: NodeJS.Timeout;
+
+          const dismissZoomAiCompanionPrompt = () => {
+            try {
+              let dom: Document = document;
+              const iframe: HTMLIFrameElement | null = document.querySelector('iframe#webclient');
+              if (iframe && iframe.contentDocument) {
+                dom = iframe.contentDocument;
+              }
+
+              const dialogCandidates = Array.from(
+                dom.querySelectorAll('div, section, [role="dialog"]'),
+              ) as HTMLElement[];
+              const aiDialog = dialogCandidates.find((element) =>
+                (element.innerText || '').includes('Request access for AI Companion'),
+              );
+
+              if (!aiDialog) {
+                return;
+              }
+
+              const buttons = Array.from(
+                aiDialog.querySelectorAll('button, [role="button"]'),
+              ) as HTMLElement[];
+              const notNowButton = buttons.find((button) =>
+                /^Not now$/i.test((button.innerText || '').trim()),
+              );
+
+              if (notNowButton) {
+                console.log('Detected Zoom AI Companion modal. Clicking "Not now"...', {
+                  userId,
+                  teamId,
+                });
+                notNowButton.click();
+              } else {
+                console.warn('Detected Zoom AI Companion modal but could not find "Not now" button', {
+                  userId,
+                  teamId,
+                });
+              }
+            } catch (error) {
+              console.error('Error dismissing Zoom AI Companion modal', {
+                userId,
+                teamId,
+                message: error?.message,
+                error,
+              });
+            }
+          };
 
           // TODO Create standard detection lib
           const detectLoneParticipant = () => {
@@ -135,6 +187,8 @@ export class RecordingTask extends Task<null, void> {
 
             loneTest = setInterval(() => {
               try {
+                dismissZoomAiCompanionPrompt();
+
                 // Detect and click blocking "OK" buttons
                 const okButton = Array.from(dom.querySelectorAll('button'))
                     .filter((el) => el?.innerText?.trim()?.match(/^OK/i));
@@ -248,6 +302,15 @@ export class RecordingTask extends Task<null, void> {
             detectLoneParticipant();
             detectIncrediblySilentMeeting();
           }, activateInactivityDetectionAfterMinutes * 60 * 1000);
+
+          dismissZoomAiCompanionPrompt();
+          aiCompanionDismissInterval = setInterval(() => {
+            if (!monitor) {
+              clearInterval(aiCompanionDismissInterval);
+              return;
+            }
+            dismissZoomAiCompanionPrompt();
+          }, 2000);
 
           // Cancel this timeout when stopping the recording
           // Stop recording after `duration` minutes upper limit
