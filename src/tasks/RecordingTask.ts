@@ -4,6 +4,15 @@ import config from '../config';
 import { Logger } from 'winston';
 import { vp9MimeType, webmMimeType } from '../lib/recording';
 
+interface CapturePreset {
+  label: string;
+  width: number;
+  height: number;
+  frameRate: number;
+  videoBitsPerSecond: number;
+  audioBitsPerSecond: number;
+}
+
 export class RecordingTask extends Task<null, void> {
   private userId: string;
   private teamId: string;
@@ -30,9 +39,36 @@ export class RecordingTask extends Task<null, void> {
   }
 
   protected async execute(): Promise<void> {
+    const capturePresets: CapturePreset[] = [
+      {
+        label: '1080p',
+        width: config.recordingCapture.width,
+        height: config.recordingCapture.height,
+        frameRate: config.recordingCapture.frameRate,
+        videoBitsPerSecond: config.recordingCapture.videoBitsPerSecond,
+        audioBitsPerSecond: config.recordingCapture.audioBitsPerSecond,
+      },
+      {
+        label: '900p-fallback',
+        width: 1600,
+        height: 900,
+        frameRate: config.recordingCapture.frameRate,
+        videoBitsPerSecond: 4_000_000,
+        audioBitsPerSecond: config.recordingCapture.audioBitsPerSecond,
+      },
+      {
+        label: '720p-fallback',
+        width: 1280,
+        height: 720,
+        frameRate: config.recordingCapture.frameRate,
+        videoBitsPerSecond: 3_000_000,
+        audioBitsPerSecond: config.recordingCapture.audioBitsPerSecond,
+      },
+    ];
+
     await this.page.evaluate(
-      async ({ teamId, duration, inactivityLimit, userId, slightlySecretId, activateInactivityDetectionAfter, activateInactivityDetectionAfterMinutes, primaryMimeType, secondaryMimeType, captureWidth, captureHeight, captureFrameRate, videoBitsPerSecond, audioBitsPerSecond }:
-        { teamId: string, duration: number, inactivityLimit: number, userId: string, slightlySecretId: string, activateInactivityDetectionAfter: string, activateInactivityDetectionAfterMinutes: number, primaryMimeType: string, secondaryMimeType: string, captureWidth: number, captureHeight: number, captureFrameRate: number, videoBitsPerSecond: number, audioBitsPerSecond: number }) => {
+      async ({ teamId, duration, inactivityLimit, userId, slightlySecretId, activateInactivityDetectionAfter, activateInactivityDetectionAfterMinutes, primaryMimeType, secondaryMimeType, capturePresets }:
+        { teamId: string, duration: number, inactivityLimit: number, userId: string, slightlySecretId: string, activateInactivityDetectionAfter: string, activateInactivityDetectionAfterMinutes: number, primaryMimeType: string, secondaryMimeType: string, capturePresets: CapturePreset[] }) => {
         let timeoutId: NodeJS.Timeout;
         let inactivityDetectionTimeout: NodeJS.Timeout;
 
@@ -63,43 +99,157 @@ export class RecordingTask extends Task<null, void> {
             return;
           }
 
-          const stream: MediaStream = await (navigator.mediaDevices as any).getDisplayMedia({
-            video: {
-              width: { ideal: captureWidth, max: captureWidth },
-              height: { ideal: captureHeight, max: captureHeight },
-              frameRate: { ideal: captureFrameRate, max: captureFrameRate },
-            },
-            audio: {
-              autoGainControl: false,
-              channels: 2,
-              channelCount: 2,
-              echoCancellation: false,
-              noiseSuppression: false,
-            },
-            preferCurrentTab: true,
-          });
+          const captureAttemptSummaries: Array<{
+            attempt: number;
+            preset: string;
+            width: number;
+            height: number;
+            frameRate: number;
+            videoBitsPerSecond: number;
+            audioBitsPerSecond: number;
+            errorName?: string;
+            errorMessage?: string;
+          }> = [];
+          let selectedPreset: CapturePreset | null = null;
+          let stream: MediaStream | null = null;
+          let mediaRecorder: MediaRecorder | null = null;
 
-          let options: MediaRecorderOptions = {};
-          if (MediaRecorder.isTypeSupported(primaryMimeType)) {
-            console.log(`Media Recorder will use ${primaryMimeType} codecs...`);
-            options = {
-              mimeType: primaryMimeType,
-              videoBitsPerSecond,
-              audioBitsPerSecond,
-            };
+          for (let index = 0; index < capturePresets.length; index++) {
+            const preset = capturePresets[index];
+            console.log('Zoom recording capture attempt starting', {
+              phase: 'zoom.recording.capture.attempt.started',
+              attempt: index + 1,
+              totalAttempts: capturePresets.length,
+              preset: preset.label,
+              width: preset.width,
+              height: preset.height,
+              frameRate: preset.frameRate,
+              videoBitsPerSecond: preset.videoBitsPerSecond,
+              audioBitsPerSecond: preset.audioBitsPerSecond,
+            });
+
+            try {
+              const currentStream: MediaStream = await (navigator.mediaDevices as any).getDisplayMedia({
+                video: {
+                  width: { ideal: preset.width, max: preset.width },
+                  height: { ideal: preset.height, max: preset.height },
+                  frameRate: { ideal: preset.frameRate, max: preset.frameRate },
+                },
+                audio: {
+                  autoGainControl: false,
+                  channels: 2,
+                  channelCount: 2,
+                  echoCancellation: false,
+                  noiseSuppression: false,
+                },
+                preferCurrentTab: true,
+              });
+              stream = currentStream;
+
+              console.log('Zoom recording capture source started', {
+                phase: 'zoom.recording.capture.source.started',
+                attempt: index + 1,
+                preset: preset.label,
+                width: preset.width,
+                height: preset.height,
+                frameRate: preset.frameRate,
+              });
+
+              let options: MediaRecorderOptions = {};
+              if (MediaRecorder.isTypeSupported(primaryMimeType)) {
+                console.log(`Media Recorder will use ${primaryMimeType} codecs...`);
+                options = {
+                  mimeType: primaryMimeType,
+                  videoBitsPerSecond: preset.videoBitsPerSecond,
+                  audioBitsPerSecond: preset.audioBitsPerSecond,
+                };
+              }
+              else {
+                console.warn(`Media Recorder did not find primary mime type codecs ${primaryMimeType}, Using fallback codecs ${secondaryMimeType}`);
+                options = {
+                  mimeType: secondaryMimeType,
+                  videoBitsPerSecond: preset.videoBitsPerSecond,
+                  audioBitsPerSecond: preset.audioBitsPerSecond,
+                };
+              }
+
+              mediaRecorder = new MediaRecorder(currentStream, { ...options });
+              console.log('Zoom recording MediaRecorder initialized', {
+                phase: 'zoom.recording.capture.recorder.ready',
+                attempt: index + 1,
+                preset: preset.label,
+                mimeType: options.mimeType,
+                videoBitsPerSecond: preset.videoBitsPerSecond,
+                audioBitsPerSecond: preset.audioBitsPerSecond,
+              });
+
+              selectedPreset = preset;
+              console.log('Zoom recording capture preset selected', {
+                phase: 'zoom.recording.capture.selected',
+                attempt: index + 1,
+                preset: preset.label,
+                width: preset.width,
+                height: preset.height,
+                frameRate: preset.frameRate,
+                videoBitsPerSecond: preset.videoBitsPerSecond,
+                audioBitsPerSecond: preset.audioBitsPerSecond,
+              });
+              break;
+            } catch (error) {
+              captureAttemptSummaries.push({
+                attempt: index + 1,
+                preset: preset.label,
+                width: preset.width,
+                height: preset.height,
+                frameRate: preset.frameRate,
+                videoBitsPerSecond: preset.videoBitsPerSecond,
+                audioBitsPerSecond: preset.audioBitsPerSecond,
+                errorName: error?.name,
+                errorMessage: error?.message,
+              });
+              console.error('Zoom recording capture attempt failed', {
+                phase: 'zoom.recording.capture.attempt.failed',
+                attempt: index + 1,
+                totalAttempts: capturePresets.length,
+                preset: preset.label,
+                width: preset.width,
+                height: preset.height,
+                frameRate: preset.frameRate,
+                videoBitsPerSecond: preset.videoBitsPerSecond,
+                audioBitsPerSecond: preset.audioBitsPerSecond,
+                errorName: error?.name,
+                errorMessage: error?.message,
+                error,
+              });
+              if (stream) {
+                stream.getTracks().forEach((track) => track.stop());
+                stream = null;
+              }
+            }
           }
-          else {
-            console.warn(`Media Recorder did not find primary mime type codecs ${primaryMimeType}, Using fallback codecs ${secondaryMimeType}`);
-            options = {
-              mimeType: secondaryMimeType,
-              videoBitsPerSecond,
-              audioBitsPerSecond,
-            };
+
+          if (!stream || !mediaRecorder || !selectedPreset) {
+            const finalAttempt = captureAttemptSummaries[captureAttemptSummaries.length - 1];
+            console.error('Zoom recording capture fallback ladder exhausted', {
+              phase: 'zoom.recording.capture.failed',
+              attempts: captureAttemptSummaries,
+              finalErrorName: finalAttempt?.errorName,
+              finalErrorMessage: finalAttempt?.errorMessage,
+            });
+            throw new Error(
+              `Zoom recording capture failed after ${capturePresets.length} attempts: ${captureAttemptSummaries
+                .map(
+                  (attempt) =>
+                    `${attempt.preset} (${attempt.width}x${attempt.height}@${attempt.frameRate}fps/${attempt.videoBitsPerSecond}bps): ${attempt.errorName ?? 'Error'} ${attempt.errorMessage ?? ''}`.trim(),
+                )
+                .join(' | ')}`,
+            );
           }
 
-          const mediaRecorder = new MediaRecorder(stream, { ...options });
+          const activeStream = stream;
+          const activeMediaRecorder = mediaRecorder;
 
-          mediaRecorder.ondataavailable = async (event: BlobEvent) => {
+          activeMediaRecorder.ondataavailable = async (event: BlobEvent) => {
             if (!event.data.size) {
               console.warn('Received empty chunk...');
               return;
@@ -114,12 +264,12 @@ export class RecordingTask extends Task<null, void> {
 
           // Start recording with 2-second intervals
           const chunkDuration = 2000;
-          mediaRecorder.start(chunkDuration);
+          activeMediaRecorder.start(chunkDuration);
 
           const stopTheRecording = async () => {
             console.log('-------- TRIGGER stop the recording');
-            mediaRecorder.stop();
-            stream.getTracks().forEach((track) => track.stop());
+            activeMediaRecorder.stop();
+            activeStream.getTracks().forEach((track) => track.stop());
 
             // Cleanup recording timer
             clearTimeout(timeoutId);
@@ -273,7 +423,7 @@ export class RecordingTask extends Task<null, void> {
 
           const detectIncrediblySilentMeeting = () => {
             const audioContext = new AudioContext();
-            const mediaSource = audioContext.createMediaStreamSource(stream);
+            const mediaSource = audioContext.createMediaStreamSource(activeStream);
             const analyser = audioContext.createAnalyser();
 
             /* Use a value suitable for the given use case of silence detection
@@ -356,11 +506,7 @@ export class RecordingTask extends Task<null, void> {
         activateInactivityDetectionAfter: new Date(new Date().getTime() + config.activateInactivityDetectionAfter * 60 * 1000).toISOString(),
         primaryMimeType: webmMimeType,
         secondaryMimeType: vp9MimeType,
-        captureWidth: config.recordingCapture.width,
-        captureHeight: config.recordingCapture.height,
-        captureFrameRate: config.recordingCapture.frameRate,
-        videoBitsPerSecond: config.recordingCapture.videoBitsPerSecond,
-        audioBitsPerSecond: config.recordingCapture.audioBitsPerSecond,
+        capturePresets,
       }
     );
   }

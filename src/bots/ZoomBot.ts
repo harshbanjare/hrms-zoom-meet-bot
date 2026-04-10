@@ -162,7 +162,19 @@ export class ZoomBot extends BotBase {
     
     try {
       const pushState = (st: BotStatus) => _state.push(st);
-      await this.joinMeeting({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, pushState, uploader });
+      await this.joinMeeting({
+        url,
+        name,
+        bearerToken,
+        teamId,
+        timezone,
+        userId,
+        eventId,
+        botId,
+        pushState,
+        uploader,
+        executionContext,
+      });
 
       // Finish the upload from the temp video
       await handleUpload();
