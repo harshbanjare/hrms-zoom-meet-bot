@@ -136,6 +136,18 @@ export class RecordingTask extends Task<null, void> {
                 dom = iframe.contentDocument;
               }
 
+              const directNotNowButton = document.querySelector(
+                'body > div:nth-child(41) > div > div > div > div.zm-modal-footer > div > div > button.zm-btn.zm-btn-legacy.zm-btn--default.zm-btn__outline--blue',
+              ) as HTMLElement | null;
+              if (directNotNowButton) {
+                console.log(
+                  'Detected Zoom AI Companion modal via direct selector. Clicking "Not now"...',
+                  { userId, teamId },
+                );
+                directNotNowButton.click();
+                return;
+              }
+
               const dialogCandidates = Array.from(
                 dom.querySelectorAll('div, section, [role="dialog"]'),
               ) as HTMLElement[];

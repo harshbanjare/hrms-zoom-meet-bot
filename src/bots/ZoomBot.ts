@@ -32,6 +32,9 @@ class BotBase extends AbstractMeetBot {
 }
 
 export class ZoomBot extends BotBase {
+  private static readonly ZOOM_AI_COMPANION_NOT_NOW_SELECTOR =
+    'body > div:nth-child(41) > div > div > div > div.zm-modal-footer > div > div > button.zm-btn.zm-btn-legacy.zm-btn--default.zm-btn__outline--blue';
+
   constructor(logger: Logger, correlationId: string) {
     super(logger, correlationId);
   }
@@ -42,6 +45,28 @@ export class ZoomBot extends BotBase {
     source: string,
   ): Promise<boolean> {
     try {
+      const directDismissButton = container.locator(
+        ZoomBot.ZOOM_AI_COMPANION_NOT_NOW_SELECTOR,
+      );
+      const directDismissVisible = await directDismissButton
+        .first()
+        .isVisible()
+        .catch(() => false);
+
+      if (directDismissVisible) {
+        await directDismissButton.first().click({ force: true, timeout: 5000 });
+        await this.page.waitForTimeout(1000);
+        this._logger.info(
+          'Dismissed Zoom AI Companion prompt using direct selector',
+          {
+            phase: 'zoom.ai-companion.dismissed',
+            source,
+            selector: ZoomBot.ZOOM_AI_COMPANION_NOT_NOW_SELECTOR,
+          },
+        );
+        return true;
+      }
+
       const companionDialog = container
         .locator('div, [role="dialog"]')
         .filter({ hasText: /Request access for AI Companion/i })
@@ -59,6 +84,7 @@ export class ZoomBot extends BotBase {
       this._logger.warn('Zoom AI Companion prompt detected', {
         phase: 'zoom.ai-companion.detected',
         source,
+        selectorAttempted: ZoomBot.ZOOM_AI_COMPANION_NOT_NOW_SELECTOR,
       });
 
       const notNowButton = companionDialog
