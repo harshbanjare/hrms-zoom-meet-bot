@@ -529,8 +529,8 @@ export class GoogleMeetBot extends MeetBotBase {
 
     // Inject the MediaRecorder code into the browser context using page.evaluate
     await this.page.evaluate(
-      async ({ teamId, duration, inactivityLimit, userId, slightlySecretId, activateInactivityDetectionAfter, activateInactivityDetectionAfterMinutes, primaryMimeType, secondaryMimeType, captureWidth, captureHeight, captureFrameRate, videoBitsPerSecond, audioBitsPerSecond }: 
-      { teamId:string, userId: string, duration: number, inactivityLimit: number, slightlySecretId: string, activateInactivityDetectionAfter: string, activateInactivityDetectionAfterMinutes: number, primaryMimeType: string, secondaryMimeType: string, captureWidth: number, captureHeight: number, captureFrameRate: number, videoBitsPerSecond: number, audioBitsPerSecond: number }) => {
+      async ({ teamId, duration, inactivityLimit, userId, slightlySecretId, activateInactivityDetectionAfter, activateInactivityDetectionAfterMinutes, primaryMimeType, secondaryMimeType }: 
+      { teamId:string, userId: string, duration: number, inactivityLimit: number, slightlySecretId: string, activateInactivityDetectionAfter: string, activateInactivityDetectionAfterMinutes: number, primaryMimeType: string, secondaryMimeType: string }) => {
         let timeoutId: NodeJS.Timeout;
         let inactivityParticipantDetectionTimeout: NodeJS.Timeout;
         let inactivitySilenceDetectionTimeout: NodeJS.Timeout;
@@ -559,11 +559,7 @@ export class GoogleMeetBot extends MeetBotBase {
           }
           
           const stream: MediaStream = await (navigator.mediaDevices as any).getDisplayMedia({
-            video: {
-              width: { ideal: captureWidth, max: captureWidth },
-              height: { ideal: captureHeight, max: captureHeight },
-              frameRate: { ideal: captureFrameRate, max: captureFrameRate },
-            },
+            video: true,
             audio: {
               autoGainControl: false,
               channels: 2,
@@ -585,19 +581,11 @@ export class GoogleMeetBot extends MeetBotBase {
           let options: MediaRecorderOptions = {};
           if (MediaRecorder.isTypeSupported(primaryMimeType)) {
             console.log(`Media Recorder will use ${primaryMimeType} codecs...`);
-            options = {
-              mimeType: primaryMimeType,
-              videoBitsPerSecond,
-              audioBitsPerSecond,
-            };
+            options = { mimeType: primaryMimeType };
           }
           else {
             console.warn(`Media Recorder did not find primary mime type codecs ${primaryMimeType}, Using fallback codecs ${secondaryMimeType}`);
-            options = {
-              mimeType: secondaryMimeType,
-              videoBitsPerSecond,
-              audioBitsPerSecond,
-            };
+            options = { mimeType: secondaryMimeType };
           }
 
           const mediaRecorder = new MediaRecorder(stream, { ...options });
@@ -1049,12 +1037,7 @@ export class GoogleMeetBot extends MeetBotBase {
         activateInactivityDetectionAfterMinutes: config.activateInactivityDetectionAfter,
         activateInactivityDetectionAfter: new Date(new Date().getTime() + config.activateInactivityDetectionAfter * 60 * 1000).toISOString(),
         primaryMimeType: webmMimeType,
-        secondaryMimeType: vp9MimeType,
-        captureWidth: config.recordingCapture.width,
-        captureHeight: config.recordingCapture.height,
-        captureFrameRate: config.recordingCapture.frameRate,
-        videoBitsPerSecond: config.recordingCapture.videoBitsPerSecond,
-        audioBitsPerSecond: config.recordingCapture.audioBitsPerSecond,
+        secondaryMimeType: vp9MimeType
       }
     );
   

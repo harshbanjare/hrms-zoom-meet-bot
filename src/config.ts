@@ -106,11 +106,11 @@ export default {
     uploadConcurrency: process.env.AZURE_UPLOAD_CONCURRENCY ? Number(process.env.AZURE_UPLOAD_CONCURRENCY) : 4,
   },
   recordingCapture: {
-    width: process.env.RECORDING_WIDTH ? Number(process.env.RECORDING_WIDTH) : 1920,
-    height: process.env.RECORDING_HEIGHT ? Number(process.env.RECORDING_HEIGHT) : 1080,
-    frameRate: process.env.RECORDING_FRAME_RATE ? Number(process.env.RECORDING_FRAME_RATE) : 30,
-    videoBitsPerSecond: process.env.RECORDING_VIDEO_BITS_PER_SECOND ? Number(process.env.RECORDING_VIDEO_BITS_PER_SECOND) : 5_000_000,
-    audioBitsPerSecond: process.env.RECORDING_AUDIO_BITS_PER_SECOND ? Number(process.env.RECORDING_AUDIO_BITS_PER_SECOND) : 160_000,
+    width: process.env.RECORDING_WIDTH ? Number(process.env.RECORDING_WIDTH) : 1280,
+    height: process.env.RECORDING_HEIGHT ? Number(process.env.RECORDING_HEIGHT) : 720,
+    frameRate: process.env.RECORDING_FRAME_RATE ? Number(process.env.RECORDING_FRAME_RATE) : 25,
+    videoBitsPerSecond: process.env.RECORDING_VIDEO_BITS_PER_SECOND ? Number(process.env.RECORDING_VIDEO_BITS_PER_SECOND) : 2_500_000,
+    audioBitsPerSecond: process.env.RECORDING_AUDIO_BITS_PER_SECOND ? Number(process.env.RECORDING_AUDIO_BITS_PER_SECOND) : 128_000,
   },
   uploaderType: process.env.UPLOADER_TYPE ? (process.env.UPLOADER_TYPE as UploaderType) : 's3' as UploaderType,
 };
