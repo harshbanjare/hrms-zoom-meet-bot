@@ -4,7 +4,14 @@ import { globalJobStore } from '../lib/globalJobStore';
 import { encodeFileNameSafebase64 } from '../util/strings';
 import { getRecordingNamePrefix } from '../util/recordingName';
 import { createHrmsCorrelationId, getErrorType, loggerFactory } from '../util/logger';
-import { HrmsJobRequest, HrmsExecutionContext, HrmsJobResult } from '../execution/types';
+import {
+  HrmsJobRequest,
+  HrmsExecutionContext,
+  HrmsJobResult,
+  HrmsRecordingTarget,
+  isHrmsS3RecordingTarget,
+  isHrmsYouTubeRecordingTarget,
+} from '../execution/types';
 import { GoogleMeetBot } from '../bots/GoogleMeetBot';
 import { MicrosoftTeamsBot } from '../bots/MicrosoftTeamsBot';
 import { ZoomBot } from '../bots/ZoomBot';
@@ -80,17 +87,61 @@ function validateHrmsJob(body: unknown): { valid: true; job: HrmsJobRequest } | 
   if (!job.recording || typeof job.recording !== 'object') {
     return { valid: false, error: 'recording is required' };
   }
-  if (!isNonEmptyString(job.recording.bucket)) {
-    return { valid: false, error: 'recording.bucket is required' };
-  }
-  if (!isNonEmptyString(job.recording.region)) {
-    return { valid: false, error: 'recording.region is required' };
-  }
-  if (!isNonEmptyString(job.recording.keyPrefix)) {
-    return { valid: false, error: 'recording.keyPrefix is required' };
-  }
-  if (job.recording.endpoint !== undefined && !isValidUrl(job.recording.endpoint)) {
-    return { valid: false, error: 'recording.endpoint must be a valid URL when provided' };
+  if (job.recording.destination === 's3') {
+    if (!isNonEmptyString(job.recording.bucket)) {
+      return { valid: false, error: 'recording.bucket is required' };
+    }
+    if (!isNonEmptyString(job.recording.region)) {
+      return { valid: false, error: 'recording.region is required' };
+    }
+    if (!isNonEmptyString(job.recording.keyPrefix)) {
+      return { valid: false, error: 'recording.keyPrefix is required' };
+    }
+    if (
+      job.recording.endpoint !== undefined &&
+      !isValidUrl(job.recording.endpoint)
+    ) {
+      return {
+        valid: false,
+        error: 'recording.endpoint must be a valid URL when provided',
+      };
+    }
+  } else if (job.recording.destination === 'youtube') {
+    if (job.recording.privacyStatus !== 'public') {
+      return {
+        valid: false,
+        error: 'recording.privacyStatus must be public for YouTube uploads',
+      };
+    }
+    if (!isNonEmptyString(job.recording.accessToken)) {
+      return {
+        valid: false,
+        error: 'recording.accessToken is required for YouTube uploads',
+      };
+    }
+    if (!isNonEmptyString(job.recording.accessTokenExpiresAt)) {
+      return {
+        valid: false,
+        error: 'recording.accessTokenExpiresAt is required for YouTube uploads',
+      };
+    }
+    if (!isNonEmptyString(job.recording.tokenRefreshUrl) || !isValidUrl(job.recording.tokenRefreshUrl)) {
+      return {
+        valid: false,
+        error: 'recording.tokenRefreshUrl must be a valid URL for YouTube uploads',
+      };
+    }
+    if (!isNonEmptyString(job.recording.channelId)) {
+      return {
+        valid: false,
+        error: 'recording.channelId is required for YouTube uploads',
+      };
+    }
+  } else {
+    return {
+      valid: false,
+      error: 'recording.destination must be one of s3 or youtube',
+    };
   }
 
   const joinAt = job.metadata?.joinAt?.trim();
@@ -105,6 +156,30 @@ function validateHrmsJob(body: unknown): { valid: true; job: HrmsJobRequest } | 
   }
 
   return { valid: true, job };
+}
+
+function normalizeRecordingTarget(recording: HrmsJobRequest['recording']): HrmsRecordingTarget {
+  if (recording.destination === 's3') {
+    return {
+      destination: 's3',
+      bucket: recording.bucket.trim(),
+      region: recording.region.trim(),
+      keyPrefix: recording.keyPrefix.trim(),
+      endpoint: recording.endpoint?.trim(),
+      forcePathStyle: recording.forcePathStyle === true,
+    };
+  }
+
+  return {
+    destination: 'youtube',
+    privacyStatus: 'public',
+    title: recording.title?.trim(),
+    description: recording.description?.trim(),
+    accessToken: recording.accessToken.trim(),
+    accessTokenExpiresAt: recording.accessTokenExpiresAt.trim(),
+    tokenRefreshUrl: recording.tokenRefreshUrl.trim(),
+    channelId: recording.channelId.trim(),
+  };
 }
 
 function createBot(provider: HrmsExecutionContext['provider'], correlationId: string, logger: Logger) {
@@ -124,10 +199,22 @@ async function runHrmsJob(executionContext: HrmsExecutionContext, logger: Logger
   try {
     logger.info('Starting HRMS meeting job execution', {
       phase: 'job.started',
-      storageProvider: 's3',
-      recordingBucket: executionContext.recording.bucket,
-      recordingRegion: executionContext.recording.region,
-      recordingKeyPrefix: executionContext.recording.keyPrefix,
+      storageProvider: executionContext.recording.destination,
+      recordingBucket: isHrmsS3RecordingTarget(executionContext.recording)
+        ? executionContext.recording.bucket
+        : undefined,
+      recordingRegion: isHrmsS3RecordingTarget(executionContext.recording)
+        ? executionContext.recording.region
+        : undefined,
+      recordingKeyPrefix: isHrmsS3RecordingTarget(executionContext.recording)
+        ? executionContext.recording.keyPrefix
+        : undefined,
+      youtubeTitle: isHrmsYouTubeRecordingTarget(executionContext.recording)
+        ? executionContext.recording.title
+        : undefined,
+      youtubeChannelId: isHrmsYouTubeRecordingTarget(executionContext.recording)
+        ? executionContext.recording.channelId
+        : undefined,
     });
     const tempFileId = encodeFileNameSafebase64(`${executionContext.jobId}:${executionContext.moduleId}`);
     const uploader: IUploader = await DiskUploader.initialize(
@@ -169,17 +256,49 @@ async function runHrmsJob(executionContext: HrmsExecutionContext, logger: Logger
     await bot.join(joinParams);
     const recording = uploader.getUploadedRecordingDetails();
 
-    if (
-      !recording ||
-      !recording.bucket ||
-      !recording.key ||
-      !recording.region ||
-      !recording.storagePath ||
-      !recording.fileName ||
-      !recording.contentType ||
-      !recording.sizeBytes
-    ) {
-      throw new Error('Recording upload completed without usable S3 metadata');
+    if (!recording || !recording.fileName || !recording.contentType || !recording.sizeBytes) {
+      throw new Error('Recording upload completed without usable metadata');
+    }
+
+    let callbackRecording: HrmsJobResult['recording'];
+    if (recording.provider === 'youtube') {
+      if (!recording.videoId || !recording.watchUrl || !recording.embedUrl) {
+        throw new Error('YouTube upload completed without usable metadata');
+      }
+      callbackRecording = {
+        destination: 'youtube',
+        videoId: recording.videoId,
+        watchUrl: recording.watchUrl,
+        embedUrl: recording.embedUrl,
+        thumbnailUrl: recording.thumbnailUrl,
+        privacyStatus: recording.privacyStatus || 'public',
+        fileName: recording.fileName,
+        contentType: recording.contentType,
+        sizeBytes: recording.sizeBytes,
+        storagePath: recording.storagePath || recording.watchUrl,
+        url: recording.url || recording.watchUrl,
+      };
+    } else {
+      if (
+        !recording.bucket ||
+        !recording.key ||
+        !recording.region ||
+        !recording.storagePath
+      ) {
+        throw new Error('S3 upload completed without usable metadata');
+      }
+      callbackRecording = {
+        destination: 's3',
+        bucket: recording.bucket,
+        key: recording.key,
+        region: recording.region,
+        endpoint: recording.endpoint,
+        fileName: recording.fileName,
+        contentType: recording.contentType,
+        sizeBytes: recording.sizeBytes,
+        storagePath: recording.storagePath,
+        url: recording.url,
+      };
     }
 
     const successPayload: HrmsJobResult = {
@@ -190,17 +309,7 @@ async function runHrmsJob(executionContext: HrmsExecutionContext, logger: Logger
       meetingUrl: executionContext.meetingUrl,
       startedAt: executionContext.startedAt,
       completedAt: new Date().toISOString(),
-      recording: {
-        bucket: recording.bucket,
-        key: recording.key,
-        region: recording.region,
-        endpoint: recording.endpoint,
-        fileName: recording.fileName,
-        contentType: recording.contentType,
-        sizeBytes: recording.sizeBytes,
-        storagePath: recording.storagePath,
-        url: recording.url,
-      },
+      recording: callbackRecording,
       metadata: executionContext.metadata,
     };
 
@@ -216,6 +325,7 @@ async function runHrmsJob(executionContext: HrmsExecutionContext, logger: Logger
       status: successPayload.status,
       recordingKey: recording.key,
       recordingBucket: recording.bucket,
+      recordingVideoId: recording.videoId,
     });
   } catch (error) {
     const failurePayload: HrmsJobResult = {
@@ -274,13 +384,7 @@ router.post('/jobs', async (req: Request, res: Response) => {
     timezone: job.timezone.trim(),
     callbackUrl: job.callbackUrl.trim(),
     callbackSecret: job.callbackSecret,
-    recording: {
-      bucket: job.recording.bucket.trim(),
-      region: job.recording.region.trim(),
-      keyPrefix: job.recording.keyPrefix.trim(),
-      endpoint: job.recording.endpoint?.trim(),
-      forcePathStyle: job.recording.forcePathStyle === true,
-    },
+    recording: normalizeRecordingTarget(job.recording),
     metadata: normalizeMetadata(job.metadata),
     startedAt: new Date().toISOString(),
   };

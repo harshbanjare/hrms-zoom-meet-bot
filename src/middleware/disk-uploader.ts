@@ -19,7 +19,11 @@ import {
   BotExecutionContext,
   UploadedRecordingDetails,
   isHrmsExecutionContext,
+  isHrmsS3RecordingTarget,
+  isHrmsYouTubeRecordingTarget,
 } from '../execution/types';
+import { uploadVideoToYouTube } from '../services/youtubeUploadService';
+import { refreshHrmsYouTubeAccessToken } from '../services/hrmsYoutubeTokenService';
 
 console.log(' ----- PWD OR CWD ----- ', process.cwd());
 
@@ -171,7 +175,10 @@ class DiskUploader implements IUploader {
 
   private buildHrmsObjectKey() {
     const executionContext = this._executionContext;
-    if (!isHrmsExecutionContext(executionContext)) {
+    if (
+      !isHrmsExecutionContext(executionContext) ||
+      !isHrmsS3RecordingTarget(executionContext.recording)
+    ) {
       return null;
     }
 
@@ -556,7 +563,7 @@ class DiskUploader implements IUploader {
     const hrmsObject = this.buildHrmsObjectKey();
     const fileName = hrmsObject?.fileName || `${defaultFileName}${this.fileExtension}`;
     const key = hrmsObject?.key || `meeting-bot/${this._userId}/${fileName}`;
-    const s3Target = hrmsExecution
+    const s3Target = hrmsExecution && isHrmsS3RecordingTarget(hrmsExecution.recording)
       ? {
           bucket: hrmsExecution.recording.bucket,
           region: hrmsExecution.recording.region,
@@ -664,6 +671,59 @@ class DiskUploader implements IUploader {
     return false;
   }
 
+  private async uploadRecordingToYouTube(): Promise<boolean> {
+    const hrmsExecution = isHrmsExecutionContext(this._executionContext)
+      ? this._executionContext
+      : null;
+
+    if (!hrmsExecution || !isHrmsYouTubeRecordingTarget(hrmsExecution.recording)) {
+      throw new Error('YouTube upload is only supported for HRMS YouTube recording jobs');
+    }
+
+    const filePath = DiskUploader.getFilePath(this._userId, this._tempFileId, this.fileExtension);
+    const defaultFileName = fileNameTemplate(
+      this._namePrefix,
+      getTimeString(this._timezone, this._logger),
+    );
+    const fileName = `${defaultFileName}${this.fileExtension}`;
+
+    this._logger.info('Uploading recording to YouTube...', {
+      destination: hrmsExecution.recording.destination,
+      title: hrmsExecution.recording.title || hrmsExecution.meetingTitle,
+      privacyStatus: hrmsExecution.recording.privacyStatus,
+    });
+
+    const uploaded = await uploadVideoToYouTube({
+      filePath,
+      fileName,
+      contentType: this.contentType,
+      title: hrmsExecution.recording.title || hrmsExecution.meetingTitle,
+      description:
+        hrmsExecution.recording.description ||
+        `Module: ${hrmsExecution.meetingTitle}\nProvider: ${hrmsExecution.provider}\nMeeting URL: ${hrmsExecution.meetingUrl}`,
+      privacyStatus: hrmsExecution.recording.privacyStatus,
+      accessToken: hrmsExecution.recording.accessToken,
+      refreshAccessToken: () =>
+        refreshHrmsYouTubeAccessToken(hrmsExecution, this._logger),
+    });
+
+    this.lastUploadedBlobUrl = uploaded.watchUrl;
+    this.lastStorageDetails = {
+      provider: 'youtube',
+      fileName: uploaded.fileName,
+      contentType: uploaded.contentType,
+      sizeBytes: uploaded.sizeBytes,
+      storagePath: uploaded.storagePath,
+      url: uploaded.url,
+      videoId: uploaded.videoId,
+      watchUrl: uploaded.watchUrl,
+      embedUrl: uploaded.embedUrl,
+      thumbnailUrl: uploaded.thumbnailUrl,
+      privacyStatus: uploaded.privacyStatus,
+    };
+    return true;
+  }
+
   private buildS3CompatibleUrl(uploadConfig: { endpoint?: string; region: string; bucket: string; forcePathStyle: boolean; }, key: string): string | undefined {
     try {
       const safeKey = encodeURI(key);
@@ -705,7 +765,9 @@ class DiskUploader implements IUploader {
       let uploadResult = false;
       // Upload recording to configured storage
       if (isHrmsExecutionContext(this._executionContext)) {
-        uploadResult = await this.uploadRecordingToObjectStorage();
+        uploadResult = isHrmsYouTubeRecordingTarget(this._executionContext.recording)
+          ? await this.uploadRecordingToYouTube()
+          : await this.uploadRecordingToObjectStorage();
       } else if (config.uploaderType === 'screenapp') {
         uploadResult = await this.uploadRecordingToScreenApp();
       } else if (config.uploaderType === 's3') {

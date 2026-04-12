@@ -112,5 +112,12 @@ export default {
     videoBitsPerSecond: process.env.RECORDING_VIDEO_BITS_PER_SECOND ? Number(process.env.RECORDING_VIDEO_BITS_PER_SECOND) : 2_500_000,
     audioBitsPerSecond: process.env.RECORDING_AUDIO_BITS_PER_SECOND ? Number(process.env.RECORDING_AUDIO_BITS_PER_SECOND) : 128_000,
   },
+  youtubeUpload: {
+    clientId: process.env.YOUTUBE_CLIENT_ID?.trim(),
+    clientSecret: process.env.YOUTUBE_CLIENT_SECRET?.trim(),
+    refreshToken: process.env.YOUTUBE_REFRESH_TOKEN?.trim(),
+    channelId: process.env.YOUTUBE_CHANNEL_ID?.trim(),
+    categoryId: process.env.YOUTUBE_UPLOAD_CATEGORY_ID?.trim() || '27',
+  },
   uploaderType: process.env.UPLOADER_TYPE ? (process.env.UPLOADER_TYPE as UploaderType) : 's3' as UploaderType,
 };

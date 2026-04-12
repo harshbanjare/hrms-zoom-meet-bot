@@ -5,6 +5,7 @@ import config, { NODE_ENV } from '../config';
 import {
   BotExecutionContext,
   isHrmsExecutionContext,
+  isHrmsS3RecordingTarget,
 } from '../execution/types';
 
 interface UploadOption {
@@ -82,6 +83,17 @@ async function uploadImageToHrmsS3(
   logger: Logger,
   opts?: UploadOption,
 ): Promise<DebugImageUploadResult> {
+  if (!isHrmsS3RecordingTarget(executionContext.recording)) {
+    logger.warn('Skipping HRMS debug screenshot upload because recording destination is not S3', {
+      phase: 'debug-artifact.upload.skipped',
+      destination: executionContext.recording.destination,
+    });
+    return {
+      success: false,
+      provider: 's3',
+    };
+  }
+
   const s3 = config.s3CompatibleStorage;
   const bucket = executionContext.recording.bucket;
   const region = executionContext.recording.region;
