@@ -510,6 +510,22 @@ docker run -d \
 - `main` - Latest commit from main branch
 - `sha-<commit-hash>` - Specific commit builds
 
+#### Running on an Ubuntu VM without Docker
+
+The bot launches Chrome as a headed browser (`headless: false`) because meeting recording needs screen capture. On a server VM there is usually no physical display, so do not start the app with `node dist/index.js` directly.
+
+Install the browser/display/audio dependencies, build the app, then start it through the Xvfb wrapper:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y xvfb pulseaudio ffmpeg google-chrome-stable
+npm ci
+npm run build
+npm run start:vm
+```
+
+If you use a process manager such as PM2 or systemd, point it at `npm run start:vm` or `/path/to/meeting-bot/xvfb-run-wrapper node dist/index.js`.
+
 ## 🏗️ Architecture
 
 ```

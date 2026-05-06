@@ -60,4 +60,10 @@ else
     ps aux | grep pulse
 fi
 
-xvfb-run --server-num=99 --server-args='-screen 0 1280x800x24' npm run start
+if [ "$#" -gt 0 ]; then
+    command=("$@")
+else
+    command=(npm run start)
+fi
+
+exec xvfb-run --server-num=99 --server-args='-screen 0 1280x800x24' "${command[@]}"

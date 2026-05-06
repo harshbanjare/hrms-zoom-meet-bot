@@ -98,6 +98,18 @@ Optional environment variables:
 - `PORT`: Server port (default: 3000)
 - `NODE_ENV`: Environment mode (default: production)
 
+### Ubuntu VM Startup
+
+Chrome is launched as a headed browser for meeting recording. On a headless Ubuntu VM, start the app through Xvfb instead of running `node dist/index.js` directly:
+
+```bash
+npm ci
+npm run build
+npm run start:vm
+```
+
+For PM2 or systemd, use `/path/to/meeting-bot/xvfb-run-wrapper node dist/index.js` as the service command. A direct `node dist/index.js` launch will fail with `Missing X server or $DISPLAY`.
+
 ### Docker Compose Example
 
 ```yaml
@@ -269,4 +281,4 @@ For high availability, consider:
 
 ### Contributing
 
-We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details on how to get involved with the project. 
+We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details on how to get involved with the project.

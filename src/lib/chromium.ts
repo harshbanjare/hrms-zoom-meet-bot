@@ -73,6 +73,37 @@ function attachBrowserErrorHandlers(
   });
 }
 
+function assertHeadedBrowserRuntime(
+  botType: BotType,
+  correlationId: string,
+  logger?: Logger,
+) {
+  if (process.platform !== 'linux') {
+    return;
+  }
+
+  if (process.env.DISPLAY || process.env.WAYLAND_DISPLAY) {
+    return;
+  }
+
+  const message = [
+    `Cannot launch ${botType} meeting bot browser: no Linux display server was found.`,
+    'The meeting bot runs Chromium with headless=false so recording and screen capture can work.',
+    'Start it through Docker entrypoint xvfb-run-wrapper/start.sh, or run it on Ubuntu with:',
+    'xvfb-run --server-args="-screen 0 1280x800x24" node dist/index.js',
+  ].join(' ');
+
+  emitBrowserLog(logger, correlationId, 'error', message, {
+    phase: 'browser.launch.preflight',
+    botType,
+    display: process.env.DISPLAY || null,
+    waylandDisplay: process.env.WAYLAND_DISPLAY || null,
+    nodeEnv: process.env.NODE_ENV || null,
+  });
+
+  throw new Error(message);
+}
+
 async function launchBrowserWithTimeout(
   launchFn: () => Promise<Browser>,
   timeoutMs: number,
@@ -162,6 +193,8 @@ async function createBrowserContext(
   const displayArgs = botType === 'microsoft'
     ? ['--kiosk', '--start-maximized']
     : [];
+
+  assertHeadedBrowserRuntime(botType, correlationId, logger);
 
   emitBrowserLog(logger, correlationId, 'info', `Launching browser for ${botType} bot`, {
     phase: 'browser.launch',
